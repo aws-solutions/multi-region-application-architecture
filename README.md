@@ -6,9 +6,8 @@ Be sure to:
 
 * Change the title in this README
 * Edit your repository description on GitHub
-* Write in your license below and create a LICENSE file
 
 ## License
 
-This library is licensed under the LICENSE NAME HERE License.
-
+This project is licensed under the terms of the Apache 2.0 license. See `LICENSE`.
+Included AWS Lambda functions are licensed under the MIT-0 license. See `LICENSE.MIT-0`.
