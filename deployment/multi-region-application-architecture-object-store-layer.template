@@ -1,0 +1,247 @@
+# Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085o) - The Multi Region Object Store Layer creates s3 buckets in primary and secondary regions and uses a CloudFormation custom resource to configure Cross-Region Replication between them. (Version SOLUTION_VERSION).
+
+Parameters:
+  SecondaryRegion:
+    Type: String
+
+Mappings:
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/SOLUTION_VERSION
+
+Resources:
+
+  LogsBucket:
+    DeletionPolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Logging not enabled, as this is the logging destination for the other s3 buckets in this template."
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  # S3
+  PrimaryBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: primary-object-store/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: MultiRegionObjectLayerS3ReplicationPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${PrimaryBucket}
+                  - !Sub arn:aws:s3:::${PrimaryBucket}/*
+              - Effect: Allow
+                Action:
+                  - s3:ReplicateObject
+                  - s3:ReplicateDelete
+                  - s3:ReplicateTags
+                  - s3:GetObjectVersionTagging
+                Resource:
+                  - !Sub arn:aws:s3:::${CreateUuid.UUID}/*
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                Resource:
+                  - !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - !Sub arn:aws:kms:${SecondaryRegion}:${AWS::AccountId}:alias/aws/s3
+
+  # Custom Resource
+  CustomResourceLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Multi-region object store layer custom resource creates the replication target bucket in the secondary region.
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], !Ref "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "object-store-layer-custom-resource.zip"]]
+      Handler: index.handler
+      Role: !GetAtt CustomResourceRole.Arn
+      Runtime: nodejs10.x
+      MemorySize: 128
+      Timeout: 300
+
+  # UUID Creator custom resource
+  UuidCreatorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Creates and returns a unique id used in this template.
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], !Ref "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "object-store-layer-uuid-creator.zip"]]
+      Handler: index.handler
+      Role: !GetAtt UuidCreatorRole.Arn
+      Runtime: nodejs10.x
+      MemorySize: 128
+      Timeout: 300
+
+  UuidCreatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-object-store-layer-uuid-creator
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+
+  CustomResourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-object-store-layer-custom-resource
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:PutEncryptionConfiguration
+                  - s3:PutBucketVersioning
+                  - s3:PutBucketPublicAccessBlock
+                Resource:
+                  - !Sub arn:aws:s3:::${CreateUuid.UUID}
+                  - !Sub arn:aws:s3:::${CreateUuid.UUID}/*
+              - Effect: Allow
+                Action:
+                  - s3:PutReplicationConfiguration
+                Resource:
+                  - !Sub arn:aws:s3:::${PrimaryBucket}
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt ReplicationRole.Arn
+
+  CreateSecondaryBucket:
+    Type: Custom::CreateSecondaryBucket
+    Properties:
+      ServiceToken: !GetAtt CustomResourceLambda.Arn
+      Resource: CreateSecondaryBucket
+      PrimaryRegion: !Ref AWS::Region
+      SecondaryRegion: !Ref SecondaryRegion
+      PrimaryBucket: !Ref PrimaryBucket
+      SecondaryBucket: !GetAtt CreateUuid.UUID
+      AwsAccountNumber: !Ref AWS::AccountId
+      ReplicationRole: !GetAtt ReplicationRole.Arn
+
+  CreateUuid:
+    Type: Custom::CreateUuid
+    Properties:
+      ServiceToken: !GetAtt UuidCreatorLambda.Arn
+      Resource: CreateUuid
+
+Outputs:
+  PrimaryBucket:
+    Description: The source s3 bucket in the primary region
+    Value: !Ref PrimaryBucket
+  SecondaryBucket:
+    Description: The target s3 bucket in the secondary region
+    Value: !GetAtt CreateSecondaryBucket.SecondaryBucket
+
+

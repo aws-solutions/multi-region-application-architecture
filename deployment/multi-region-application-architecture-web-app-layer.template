@@ -1,0 +1,118 @@
+# Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085p) - The Multi Region Web App Layer uses a CloudFormation custom resource to deploy the Web App template to primary and secondary regions. (Version SOLUTION_VERSION).
+
+Parameters:
+
+  CustomResourceExecutionRoleArn:
+    Type: String
+    Description: The ARN of the IAM Policy used to allow CloudFormation to create/delete the presentation layer app stacks. 
+
+  SecondaryRegion: 
+    Type: String
+    Description: The secondary region where the web app CloudFormation template should be deployed
+
+  PrimaryUserPoolId:
+    Type: String
+    Description: The primary region Cognito User Pool  that the Amplify library connects to for user authentication
+  PrimaryUserPoolClientId:
+    Type: String
+    Description: The primary region Cognito User Pool Client id that is attached to the Cognito Identity Pool used to make authenticated requests 
+  PrimaryPhotosBucket:
+    Type: String
+    Description: The primary region S3 bucket name that photos will be stored in
+  PrimaryPhotosApi:
+    Type: String
+    Description: The primary region API Gateway Endpoint of the back-end Photos API
+    
+  SecondaryUserPoolId:
+    Type: String
+    Description: The secondary region Cognito User Pool that the Amplify library connects to for user authentication
+  SecondaryUserPoolClientId:
+    Type: String
+    Description: The secondary region Cognito User Pool Client id that is attached to the Cognito Identity Pool used to make authenticated requests 
+  SecondaryPhotosBucket:
+   Type: String
+   Description: The secondary region S3 bucket name that photos will be stored in
+  SecondaryPhotosApi:
+    Type: String
+    Description: The secondary region API Gateway Endpoint of the back-end Photos API
+
+Mappings:
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/SOLUTION_VERSION
+
+Resources:
+
+  CustomStackResource:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: CFN Lambda backed custom resource to deploy presentation layer app to primary and secondary regions
+      Handler: index.handler
+      Role: !Ref CustomResourceExecutionRoleArn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "web-app-layer-custom-resource.zip"]]
+      Runtime:  nodejs10.x
+      Timeout: 300
+
+  PrimaryPresentationLayer:
+    Type: Custom::PrimaryPresentationLayer
+    Properties:
+      ServiceToken: !GetAtt CustomStackResource.Arn
+      Resource: PrimaryPresentationLayer
+      Region: !Ref AWS::Region
+      StackName: !Ref AWS::StackName
+      PhotosBucket: !Ref PrimaryPhotosBucket
+      PhotosApi: !Ref PrimaryPhotosApi
+      UserPoolId: !Ref PrimaryUserPoolId
+      UserPoolClientId: !Ref PrimaryUserPoolClientId
+      TemplateUrl: !Sub
+        - https://s3.amazonaws.com/${S3Bucket}-${AWS::Region}/${KeyPrefix}/multi-region-application-architecture-web-app.template
+        - S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+          KeyPrefix: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+
+  SecondaryPresentationLayer:
+    Type: Custom::SecondaryPresentationLayer
+    Properties:
+      ServiceToken: !GetAtt CustomStackResource.Arn
+      Resource: SecondaryPresentationLayer
+      Region: !Ref SecondaryRegion
+      StackName: !Ref AWS::StackName
+      PhotosBucket: !Ref SecondaryPhotosBucket
+      PhotosApi: !Ref SecondaryPhotosApi
+      UserPoolId: !Ref SecondaryUserPoolId
+      UserPoolClientId: !Ref SecondaryUserPoolClientId
+      TemplateUrl: !Sub
+        - https://s3.amazonaws.com/${S3Bucket}-${SecondaryRegion}/${KeyPrefix}/multi-region-application-architecture-web-app.template
+        - S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+          KeyPrefix: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+
+Outputs:
+
+  PrimaryConsoleDistribution:
+    Value: !Sub https://${PrimaryPresentationLayer.PrimaryCloudFrontDomain}/
+
+  PrimaryConsoleBucket:
+    Value: !GetAtt PrimaryPresentationLayer.PrimaryConsoleBucket
+
+  SecondaryConsoleDistribution:
+    Value: !Sub https://${SecondaryPresentationLayer.SecondaryCloudFrontDomain}/
+
+  SecondaryConsoleBucket:
+    Value: !GetAtt SecondaryPresentationLayer.SecondaryConsoleBucket

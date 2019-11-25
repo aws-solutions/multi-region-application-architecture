@@ -1,0 +1,315 @@
+# Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085pa) - The Multi Region Web App CloudFormation Template deploys a React and Amplify-based photo-sharing website to a s3 bucket and cloudfront distribution. (Version SOLUTION_VERSION).
+
+Parameters:
+
+  UserPoolId:
+    Type: String
+    Description: The Cognito User Pool that the Amplify library connects to for user authentication
+  UserPoolClientId:
+    Type: String
+    Description: The Cognito User Pool Client id that is attached to the Cognito Identity Pool used to make authenticated requests 
+  PhotosBucket:
+    Type: String
+    Description: The S3 bucket name that photos will be stored in
+  PhotosApi:
+    Type: String
+    Description: The API Gateway Endpoint of the back-end Photos API
+
+Mappings:
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/SOLUTION_VERSION
+
+Resources:
+
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClientId
+          ProviderName: !Sub cognito-idp.${AWS::Region}.amazonaws.com/${UserPoolId}
+
+  IdentityPoolAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt UserPoolAuthenticatedRole.Arn
+
+  UserPoolAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+      Policies:
+        - PolicyName: AuthenticatedRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              # See the "Inline policy for the Auth_Role" section of the amplify storage documentation: https://aws-amplify.github.io/docs/js/storage.
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Join ["", ["arn:aws:s3:::", !Ref PhotosBucket, "/public/*"]]
+                  - !Join ["", ["arn:aws:s3:::", !Ref PhotosBucket, "/protected/${cognito-identity.amazonaws.com:sub}/*"]]
+                  - !Join ["", ["arn:aws:s3:::", !Ref PhotosBucket, "/private/${cognito-identity.amazonaws.com:sub}/*"]]
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:aws:s3:::${PhotosBucket}/uploads/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub arn:aws:s3:::${PhotosBucket}/protected/*
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${PhotosBucket}
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - public/
+                      - public/*
+                      - protected/
+                      - protected/*
+                      - private/${cognito-identity.amazonaws.com:sub}/
+                      - private/${cognito-identity.amazonaws.com:sub}/*
+
+  LogsBucket:
+    DeletionPolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Logging not enabled, as this is the logging destination for the other s3 buckets in this template."
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  ConsoleBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: console-bucket-access/
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W41
+            reason: "Encryption not enabled, this bucket host a website accessed through CloudFront"
+
+  ConsoleBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref ConsoleBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt ConsoleOriginAccessIdentity.S3CanonicalUserId
+            Action: 's3:GetObject'
+            Resource: !Join ["", ["arn:aws:s3:::", Ref: "ConsoleBucket", "/*"]]
+
+  ConsoleOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub "access-identity-${ConsoleBucket}"
+
+  ConsoleCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: "Website distribution for solution"
+        Logging:
+          IncludeCookies: false
+          Bucket: !GetAtt LogsBucket.DomainName
+          Prefix: cloudfront-logs/
+        Origins:
+          - Id: console
+            DomainName: !Sub ${ConsoleBucket}.s3.${AWS::Region}.amazonaws.com
+            OriginPath: /console
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${ConsoleOriginAccessIdentity}
+        DefaultCacheBehavior:
+          TargetOriginId: console
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ForwardedValues:
+            QueryString: false
+          ViewerProtocolPolicy: redirect-to-https
+        IPV6Enabled: true
+        DefaultRootObject: index.html
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        Enabled: true
+        HttpVersion: http2
+
+  CustomResource:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: CFN Lambda backed custom resource to deploy assets to s3
+      Handler: index.handler
+      Role: !GetAtt LambdaCustomRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "web-app-custom-resource.zip"]]
+      Runtime:  nodejs10.x
+      Timeout: 300
+
+  LambdaCustomRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "/* required to get/put objects to Amazon S3"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-custom-resource-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub ${ConsoleBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - s3:PutBucketCORS
+                Resource:
+                  !Sub arn:aws:s3:::${PhotosBucket}
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Join ["", ["arn:aws:s3:::",!FindInMap ["SourceCode", "General", "S3Bucket"], "-", Ref: "AWS::Region","/*"]]
+
+  CopyConsoleFiles:
+    Type: Custom::CopyConsoleFiles
+    Properties:
+      ServiceToken: !GetAtt CustomResource.Arn
+      Resource: CopyConsoleFiles
+      SrcBucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+      SrcPath: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+      ManifestFile: console-manifest.json
+      DestBucket: !Ref ConsoleBucket
+
+  CreateAmplifyConfig:
+    Type: Custom::CreateAmplifyConfig
+    Properties:
+      ServiceToken: !GetAtt CustomResource.Arn
+      Resource: CreateAmplifyConfig
+      DestBucket: !Ref ConsoleBucket
+      AmplifyConfig:
+        !Sub |
+          const amplifyConfig = {
+            Auth: {
+              mandatorySignIn: true,
+              region: '${AWS::Region}',
+              userPoolId: '${UserPoolId}',
+              identityPoolId: '${IdentityPool}',
+              userPoolWebClientId: '${UserPoolClientId}'
+            },
+            Analytics: {
+              disabled: true
+            },
+            Storage: {
+              AWSS3: {
+                bucket: '${PhotosBucket}',
+                region: '${AWS::Region}',
+                identityPoolId: '${IdentityPool}',
+              }
+            },
+            API: {
+              endpoints: [
+                {
+                  name: 'PhotosApi',
+                  endpoint: '${PhotosApi}'
+                }
+              ]
+            }
+          }
+
+  S3CorsConfig:
+    Type: Custom::S3CorsConfig
+    Properties:
+      ServiceToken: !GetAtt CustomResource.Arn
+      Resource: S3CorsConfig
+      Bucket: !Ref PhotosBucket
+      CloudFrontDomain: !Sub ${ConsoleCloudFront.DomainName}
+
+Outputs:
+
+  ConsoleDistribution:
+    Description: Console URL
+    Value: !Sub https://${ConsoleCloudFront.DomainName}/
+
+  ConsoleBucket:
+    Description: Console URL
+    Value: !Ref ConsoleBucket

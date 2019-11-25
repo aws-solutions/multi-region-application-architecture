@@ -1,0 +1,20 @@
+{
+  "name": "web-app-layer-custom-resource",
+  "description": "Multi-Region presentation layer custom resource Lambda function",
+  "main": "index.js",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "aws-sdk": "^2.563.0",
+    "aws-sdk-mock": "^4.5.0",
+    "axios-mock-adapter": "^1.17.0",
+    "chai": "^4.2.0",
+    "mocha": "^6.2.2"
+  },
+  "scripts": {
+    "test": "mocha **/*.spec.js"
+  },
+  "dependencies": {
+    "axios": "^0.19.0"
+  }
+}

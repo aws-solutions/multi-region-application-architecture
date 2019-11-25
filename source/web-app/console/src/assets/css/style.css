@@ -1,0 +1,97 @@
+
+body {
+  margin: 0;
+  -moz-osx-font-smoothing: grayscale;
+  /*font-size: 1rem; */
+  font-size: 90%;
+  font-family: "Amazon Ember", "Helvetica", "sans-serif";
+  font-weight: 200;
+  background-color: #F1F1F1;
+}
+
+#logo {
+  padding-top: 2px;
+  vertical-align: middle;
+  margin-right: 0.5rem;
+}
+
+/******* Reactstrap Overides ********/
+.bg-dark {
+  background-color: #31465F!important;
+}
+
+.nav-link {
+  font-size: 0.9rem;
+  text-transform: uppercase !important;
+}
+
+.btn-link {
+  color: hsla(0,0%,100%,.5) !important;
+}
+
+.nav-link:hover {
+color: #FF9900 !important;
+}
+
+.navbar-text {
+  color: #FF9900 !important;
+  font-size: 1.2rem;
+  }
+
+.main {
+  margin: 3rem auto;
+  padding:2rem;
+  width: 90%;
+  max-width: 1120px;
+  min-height: 300px;
+  border-radius: 2px;
+  border-collapse: collapse;
+  box-shadow: 1px 1px 4px 0 rgba(0,0,0,0.15);
+  background-color: #fff;
+  overflow:hidden
+}
+
+.footer {
+  text-align: center;
+  border-radius: 2px;
+  padding: 1rem;
+  margin: 0.7rem;
+}
+
+.text-link {
+  color: #00a1c9;
+  font-weight: 400;
+}
+
+.thumbnail {
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 10px;
+  margin: 10px;
+  width: 250px;
+}
+
+.thumbnail:hover {
+  box-shadow: 0 0 4px 2px rgba(0, 140, 186, 0.5);
+}
+
+.userLabel {
+  color: #555;
+  padding: 10px;
+}
+
+.commentsCol {
+  overflow-y: scroll;
+  height: 500px;
+  border-bottom: 1px solid #ddd;
+}
+
+.commentsForm {
+  margin-top: 20px;
+  margin-right: 25px;
+}
+
+.commentsTextControl {
+  width: 500px;
+}
+

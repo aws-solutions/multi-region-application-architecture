@@ -1,0 +1,21 @@
+{
+  "name": "object-store-layer-uuid-creator",
+  "description": "Multi-Region object store layer unique id creator custom resource",
+  "main": "index.js",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "axios": "^0.19.0",
+    "uuid": "^3.3.3"
+  },
+  "devDependencies": {
+    "aws-sdk": "^2.563.0",
+    "aws-sdk-mock": "^4.5.0",
+    "axios-mock-adapter": "^1.17.0",
+    "chai": "^4.2.0",
+    "mocha": "^6.2.2"
+  },
+  "scripts": {
+    "test": "mocha **/*.spec.js"
+  }
+}
