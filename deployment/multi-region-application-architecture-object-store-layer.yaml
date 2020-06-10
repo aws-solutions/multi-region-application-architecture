@@ -1,0 +1,500 @@
+# Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085o) - The Multi Region Object Store Layer creates s3 buckets in primary and secondary regions and uses a CloudFormation custom resource to configure S3 Cross-Region Replication between them. (Version SOLUTION_VERSION).
+
+Parameters:
+
+  ParentStackName:
+    Type: String
+    Description: The name of the parent stack passed in when this Stack Instance is created. Used to name/identify resources for the StackSet.
+
+  SecondaryRegion:
+    Type: String
+    Description: The Secondary Region the backup Cognito User Pool should be created in.
+
+  ProvisionStackPolicy:
+    Type: String
+    Description: Set this parameter to 'Yes' to provision the IAM Policy necessary to create the resources in this template.
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+
+  UserPoolId:
+    Type: String
+    Description: The Cognito User Pool that the Amplify library connects to for user authentication
+  
+  UserPoolClientId:
+    Type: String
+    Description: The Cognito User Pool Client id that is attached to the Cognito Identity Pool used to make authenticated requests 
+
+  UIDomainName:
+    Type: String
+    Description: Domain name from where the UI will be served. Used as the allowed origin by the API.
+
+  BucketNameToken:
+    Type: String
+    Description: Random token to be used in S3 bucket names
+
+Conditions:
+
+  # When True - The only resource to be provisioned in this template is the StackCreationPolicy resource. 
+  ShouldProvisionStackPolicy: !Equals [ !Ref ProvisionStackPolicy, 'Yes' ]
+
+  IsPrimaryRegion: !And
+    - !Not [ Condition: IsSecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+  IsSecondaryRegion: !And
+    - !Equals [ !Ref "AWS::Region", !Ref SecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+
+Mappings:
+
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/SOLUTION_VERSION
+
+Resources:
+
+  #######################################
+  # Stack Creation Custom Policy - Used by 
+  # CloudFormation StackSet Execution Role
+  # to provision the resources in this template
+  #######################################
+  StackCreationPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: ShouldProvisionStackPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W13
+            reason: >- 
+              Wildcard (*) resource needed for Cognito resources to be managed by the CfnExecRole
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+
+          - Effect: Allow
+            Action:
+              - cognito-identity:CreateIdentityPool
+              - cognito-identity:DeleteIdentityPool
+              - cognito-identity:SetIdentityPoolRoles
+            Resource:
+              - '*'
+
+          - Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:PutEncryptionConfiguration
+              - s3:PutBucketVersioning
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutBucketAcl
+              - s3:PutBucketLogging
+              - s3:PutReplicationConfiguration
+              - s3:PutBucketCORS
+            Resource:
+              - !Sub arn:aws:s3:::${StackNameFormatter.Value}*
+
+  #######################################
+  # Primary Region Resources
+  #######################################
+
+  PrimaryLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsPrimaryRegion
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${StackNameFormatter.Value}-${BucketNameToken}-${AWS::Region}-logs
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Logging not enabled, as this is the logging destination for the other s3 buckets in this template."
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  PrimaryBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsPrimaryRegion
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${StackNameFormatter.Value}-${BucketNameToken}-${AWS::Region}
+      CorsConfiguration:
+        CorsRules: 
+          - AllowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+            AllowedOrigins:
+              - !Ref UIDomainName
+            AllowedHeaders:
+              - '*'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref PrimaryLogsBucket
+        LogFilePrefix: primary-object-store/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3
+      ReplicationConfiguration:
+        Role: !GetAtt ReplicationRole.Arn
+        Rules:
+          - Prefix: ''
+            Status: Enabled
+            Destination:
+                Bucket: !Sub arn:aws:s3:::${StackNameFormatter.Value}-${BucketNameToken}-${SecondaryRegion}
+                EncryptionConfiguration:
+                  ReplicaKmsKeyID: !Sub arn:aws:kms:${SecondaryRegion}:${AWS::AccountId}:alias/aws/s3
+            SourceSelectionCriteria:
+                SseKmsEncryptedObjects:
+                  Status: Enabled
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: MultiRegionObjectLayerS3ReplicationPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${StackNameFormatter.Value}-${BucketNameToken}-${AWS::Region}
+                  - !Sub arn:aws:s3:::${StackNameFormatter.Value}-${BucketNameToken}-${AWS::Region}/*
+              - Effect: Allow
+                Action:
+                  - s3:ReplicateObject
+                  - s3:ReplicateDelete
+                  - s3:ReplicateTags
+                  - s3:GetObjectVersionTagging
+                Resource:
+                  - !Sub arn:aws:s3:::${StackNameFormatter.Value}-${BucketNameToken}-${SecondaryRegion}
+                  - !Sub arn:aws:s3:::${StackNameFormatter.Value}-${BucketNameToken}-${SecondaryRegion}/*
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                Resource:
+                  - !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - !Sub arn:aws:kms:${SecondaryRegion}:${AWS::AccountId}:alias/aws/s3
+
+  PrimaryIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Condition: IsPrimaryRegion
+    Properties:
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClientId
+          ProviderName: !Sub cognito-idp.${AWS::Region}.amazonaws.com/${UserPoolId}
+
+  PrimaryIdentityPoolAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Condition: IsPrimaryRegion
+    Properties:
+      IdentityPoolId: !Ref PrimaryIdentityPool
+      Roles:
+        authenticated: !GetAtt PrimaryUserPoolAuthenticatedRole.Arn
+
+  PrimaryUserPoolAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Condition: IsPrimaryRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+      Policies:
+        - PolicyName: AuthenticatedRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              # See the "Inline policy for the Auth_Role" section of the amplify storage documentation: https://aws-amplify.github.io/docs/js/storage.
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Join ["", ["arn:aws:s3:::", !Ref PrimaryBucket, "/public/*"]]
+                  - !Join ["", ["arn:aws:s3:::", !Ref PrimaryBucket, "/protected/${cognito-identity.amazonaws.com:sub}/*"]]
+                  - !Join ["", ["arn:aws:s3:::", !Ref PrimaryBucket, "/private/${cognito-identity.amazonaws.com:sub}/*"]]
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:aws:s3:::${PrimaryBucket}/uploads/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub arn:aws:s3:::${PrimaryBucket}/protected/*
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${PrimaryBucket}
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - public/
+                      - public/*
+                      - protected/
+                      - protected/*
+                      - private/${cognito-identity.amazonaws.com:sub}/
+                      - private/${cognito-identity.amazonaws.com:sub}/*
+
+  ########################################
+  # Secondary Region Resources
+  #######################################
+
+  SecondaryLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsSecondaryRegion
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${StackNameFormatter.Value}-${BucketNameToken}-${AWS::Region}-logs
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Logging not enabled, as this is the logging destination for the other s3 buckets in this template."
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  SecondaryBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsSecondaryRegion
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${StackNameFormatter.Value}-${BucketNameToken}-${AWS::Region}
+      CorsConfiguration:
+        CorsRules: 
+          - AllowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+            AllowedOrigins:
+              - !Ref UIDomainName
+            AllowedHeaders:
+              - '*'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref SecondaryLogsBucket
+        LogFilePrefix: secondary-object-store/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  SecondaryIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Condition: IsSecondaryRegion
+    Properties:
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClientId
+          ProviderName: !Sub cognito-idp.${AWS::Region}.amazonaws.com/${UserPoolId}
+
+  SecondaryIdentityPoolAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Condition: IsSecondaryRegion
+    Properties:
+      IdentityPoolId: !Ref SecondaryIdentityPool
+      Roles:
+        authenticated: !GetAtt SecondaryUserPoolAuthenticatedRole.Arn
+
+  SecondaryUserPoolAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Condition: IsSecondaryRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+      Policies:
+        - PolicyName: AuthenticatedRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              # See the "Inline policy for the Auth_Role" section of the amplify storage documentation: https://aws-amplify.github.io/docs/js/storage.
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Join ["", ["arn:aws:s3:::", !Ref SecondaryBucket, "/public/*"]]
+                  - !Join ["", ["arn:aws:s3:::", !Ref SecondaryBucket, "/protected/${cognito-identity.amazonaws.com:sub}/*"]]
+                  - !Join ["", ["arn:aws:s3:::", !Ref SecondaryBucket, "/private/${cognito-identity.amazonaws.com:sub}/*"]]
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:aws:s3:::${SecondaryBucket}/uploads/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub arn:aws:s3:::${SecondaryBucket}/protected/*
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${SecondaryBucket}
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - public/
+                      - public/*
+                      - protected/
+                      - protected/*
+                      - private/${cognito-identity.amazonaws.com:sub}/
+                      - private/${cognito-identity.amazonaws.com:sub}/*
+
+  StackNameFormatterLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt StackNameFormatterRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "stack-name-formatter.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 30
+
+  StackNameFormatterRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              logs:CreateLogGroup/CreateLogStream/PutLogEvents - requires trailing * on resource to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-StackNameFormatterRole
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+
+  StackNameFormatter:
+    Type: Custom::StackNameFormatter
+    Properties:
+      ServiceToken: !GetAtt StackNameFormatterLambda.Arn
+      StackName: !Ref ParentStackName
+
+Outputs:
+
+  StackCreationPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !Ref StackCreationPolicy
+
+  ObjectStore:
+    Value: !If [ ShouldProvisionStackPolicy, "", !If [ IsPrimaryRegion, !Ref PrimaryBucket, !Ref SecondaryBucket]]
+
+  IdentityPoolId:
+    Value: !If [ ShouldProvisionStackPolicy, "", !If [ IsPrimaryRegion, !Ref PrimaryIdentityPool, !Ref SecondaryIdentityPool]]

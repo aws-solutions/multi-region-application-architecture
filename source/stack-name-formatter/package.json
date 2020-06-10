@@ -1,0 +1,28 @@
+{
+  "name": "stack-name-formatter",
+  "version": "1.0.0",
+  "description": "CloudFormation Custom Resource to format a stackname before its passed to StackSet Instances",
+  "main": "index.js",
+  "scripts": {
+    "package:build": "tsc --project tsconfig.json --outDir .",
+    "clean": "rm -rf node_modules && rm -rf package && rm -rf coverage && rm -rf build",
+    "package": "npm ci && npm run package:build && npm prune --production",
+    "test": "jest --config jestconfig.json --coverage"
+  },
+  "author": "AWS Solutions",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/jest": "^24.9.0",
+    "@types/node": "^13.1.8",
+    "aws-lambda": "^1.0.5",
+    "aws-sdk": "^2.606.0",
+    "aws-sdk-mock": "^5.0.0",
+    "axios-mock-adapter": "^1.17.0",
+    "jest": "^24.9.0",
+    "ts-jest": "^25.5.1",
+    "typescript": "^3.7.5"
+  },
+  "dependencies": {
+    "axios": "^0.19.0"
+  }
+}

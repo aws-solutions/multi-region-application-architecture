@@ -1,0 +1,22 @@
+{
+  "name": "user-pool-pre-sign-up-trigger",
+  "version": "1.0.0",
+  "description": "Denies sign-up requests by throwing an Error. Used to make the secondary user pool read-only",
+  "main": "index.js",
+  "scripts": {
+    "package:build": "tsc --project tsconfig.json --outDir .",
+    "clean": "rm -rf node_modules && rm -rf package && rm -rf coverage && rm -rf build",
+    "package": "npm ci && npm run package:build && npm prune --production",
+    "test": "jest --config jestconfig.json --coverage"
+  },
+  "author": "AWS Solutions",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^13.1.8",
+    "@types/jest": "^24.9.0",
+    "jest": "^25.1.0",
+    "ts-jest": "^25.0.0",
+    "typescript": "^3.7.5"
+  }
+}

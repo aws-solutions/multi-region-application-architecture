@@ -1,0 +1,346 @@
+# Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085ca) - The Multi Region Serverless App deploys a back-end API for the sample Photo Sharing application. (Version SOLUTION_VERSION).
+
+Parameters:
+
+  ParentStackName:
+    Type: String
+    Description: The name of the parent stack passed in when this Stack Instance is created. Used to name/identify resources for the StackSet.
+
+  SecondaryRegion:
+    Type: String
+    Description: The Secondary Region the backup Cognito User Pool should be created in.
+
+  ProvisionStackPolicy:
+    Type: String
+    Description: Set this parameter to 'Yes' to provision the IAM Policy necessary to create the resources in this template.
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+
+  KeyValueStoreTableName:
+    Type: String
+
+  UserPoolId:
+    Type: String
+
+  UIDomainName:
+    Type: String
+    Description: Domain name from where the UI will be served. Used as the allowed origin by the API.
+  
+Conditions:
+
+  # When True - The only resource to be provisioned in this template is the StackCreationPolicy resource. 
+  ShouldProvisionStackPolicy: !Equals [ !Ref ProvisionStackPolicy, 'Yes' ]
+
+  IsPrimaryRegion: !And
+    - !Not [ Condition: IsSecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+  IsSecondaryRegion: !And
+    - !Equals [ !Ref "AWS::Region", !Ref SecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+  IsEitherRegion: !Or
+    - Condition: IsPrimaryRegion
+    - Condition: IsSecondaryRegion
+
+Mappings:
+
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/SOLUTION_VERSION
+
+Resources:
+
+  #######################################
+  # Stack Creation Custom Policy - Used by 
+  # CloudFormation StackSet Execution Role
+  # to provision the resources in this template
+  #######################################
+  StackCreationPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: ShouldProvisionStackPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+
+          # Allows the StackSet to manage the Api Gateways that belong to this template
+          - Effect: Allow
+            Action:
+              - apigateway:GET
+              - apigateway:DELETE
+              - apigateway:PATCH
+              - apigateway:POST
+              - apigateway:PUT
+            Resource:
+              - !Sub arn:aws:apigateway:${AWS::Region}::/account
+              - !Sub arn:aws:apigateway:${SecondaryRegion}::/account
+
+              - !Sub arn:aws:apigateway:${AWS::Region}::/restapis/*
+              - !Sub arn:aws:apigateway:${SecondaryRegion}::/restapis/*
+              - !Sub arn:aws:apigateway:${AWS::Region}::/restapis
+              - !Sub arn:aws:apigateway:${SecondaryRegion}::/restapis
+
+  #######################################
+  # Resources to be deployed to All Regions
+  #######################################
+  ApiGatewayAccountLogsRole:
+    Type: AWS::IAM::Role
+    Condition: IsEitherRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Condition: IsEitherRegion
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayAccountLogsRole.Arn
+
+  ApiGatewayRole:
+    Type: AWS::IAM::Role
+    Condition: IsEitherRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-api-gateway-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${KeyValueStoreTableName}
+              - Effect: Allow
+                Action: 
+                  - dynamodb:Query
+                Resource: 
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${KeyValueStoreTableName}/index/photoId
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Condition: IsEitherRegion
+    Properties:
+      RestApiId: !Ref ApiGateway
+      Description: "Production"
+      StageName: "prod"
+      StageDescription:
+        AccessLogSetting:
+          DestinationArn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:API-Gateway-Execution-Logs_${ApiGateway}/prod
+          Format: >- 
+            { "requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "caller":"$context.identity.caller", "user":"$context.identity.user","requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath", "status":"$context.status","protocol":"$context.protocol", "responseLength":"$context.responseLength" }
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W68
+            reason: API is secured with a Cognito User Pool
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Condition: IsEitherRegion
+    Properties:
+        Body:
+          swagger: "2.0"
+          basePath: "/prod"
+          schemes:
+          - "https"
+          paths:
+            /comments/{photoId}:
+              get:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                security:
+                - CommentsApiCognitoAuthorizer: []
+                x-amazon-apigateway-integration:
+                  credentials: !Sub ${ApiGatewayRole.Arn}
+                  uri: !Sub arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'${UIDomainName}'"
+                      responseTemplates:
+                        application/json: >-
+                          #set($inputRoot = $input.path('$'))
+                          {
+                            "comments": [
+                              #foreach($elem in $inputRoot.Items) {
+                                "commentId": "$elem.commentId.S",
+                                "user": "$elem.user.S",
+                                "message": "$elem.message.S"
+                              }#if($foreach.hasNext),#end
+                            #end
+                            ]
+                          }
+                  requestTemplates:
+                    application/json: 
+                      !Sub |
+                      {
+                        "TableName": "${KeyValueStoreTableName}",
+                        "IndexName": "photoId",
+                        "KeyConditionExpression": "photoId = :v1",
+                        "ExpressionAttributeValues": {
+                          ":v1": {
+                            "S": "$input.params('photoId')"
+                          }
+                        }
+                      }
+                  passthroughBehavior: "never"
+                  httpMethod: "POST"
+                  type: "aws"
+              post:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                security:
+                - CommentsApiCognitoAuthorizer: []
+                x-amazon-apigateway-integration:
+                  credentials: !Sub ${ApiGatewayRole.Arn}
+                  uri: !Sub arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST'"
+                        method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'${UIDomainName}'"
+                  requestTemplates:
+                    application/json:
+                      !Sub |
+                      { 
+                        "TableName": "${KeyValueStoreTableName}",
+                        "Item": {
+                          "commentId": {
+                            "S": "$input.path('$.commentId')"
+                          },
+                          "photoId": {
+                            "S": "$input.path('$.photoId')"
+                          },
+                          "user": {
+                            "S": "$input.path('$.user')"
+                          },
+                          "message": {
+                            "S": "$input.path('$.message')"
+                          }
+                        }
+                      }
+                  passthroughBehavior: "never"
+                  httpMethod: "POST"
+                  type: "aws"
+              options:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !Sub ${ApiGatewayRole.Arn}
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST'"
+                        method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'${UIDomainName}'"
+                  requestTemplates:
+                    application/json: "{\"statusCode\": 200}"
+                  passthroughBehavior: "when_no_match"
+                  type: "mock"
+          securityDefinitions:
+            CommentsApiCognitoAuthorizer:
+              type: "apiKey"
+              name: "Authorization"
+              in: "header"
+              x-amazon-apigateway-authtype: "cognito_user_pools"
+              x-amazon-apigateway-authorizer:
+                providerARNs:
+                - !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}
+                type: "cognito_user_pools"
+          definitions:
+            Empty:
+              type: "object"
+              title: "Empty Schema"
+          x-amazon-apigateway-gateway-responses:
+            DEFAULT_4XX:
+              responseTemplates:
+                application/json: "{\"message\":$context.error.messageString}"
+
+Outputs:
+
+  StackCreationPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !Ref StackCreationPolicy
+
+  AppApi:
+    Value: !If [ ShouldProvisionStackPolicy, "", !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/" ]

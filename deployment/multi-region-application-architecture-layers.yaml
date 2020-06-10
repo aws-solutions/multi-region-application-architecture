@@ -1,0 +1,209 @@
+# Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085l) - The Multi Region Application Architecture Layers template orchestrates the deployment of the layers comprising the sample N-Tier architecture. (Version SOLUTION_VERSION).
+
+Parameters:
+
+  ParentStackName:
+    Type: String
+    Description: The name of the parent stack passed in when this Stack Instance is created. Used to name/identify resources for the StackSet.
+
+  ProvisionStackPolicy:
+    Type: String
+    Description: Set this parameter to 'Yes' to provision the IAM Policy necessary to create the resources in this template.
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+
+  AdminName:
+    Type: String
+    Description: User name for the admin cognito user account that will be created when this solution is provisioned
+    MinLength: 4 
+    MaxLength: 20 
+    AllowedPattern: '[a-zA-Z0-9-]+'
+    ConstraintDescription: "AdminName must be a minimum of 4 characters and cannot include spaces"
+
+  AdminEmail:
+    Type: String
+    Description: Email address for the admin cognito user account that will be created when this solution is provisioned
+    MinLength: 5 
+    AllowedPattern: '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$' 
+    ConstraintDescription: "AdminEmail must be a valid email address"
+
+  AdminPhoneNumber:
+    Type: String
+    Description: Phone Number for the admin cognito user account that will be created when this solution is provisioned specified in the format +12345678999
+    MinLength: 12 
+    MaxLength: 12 
+
+  SecondaryRegion:
+    Type: String
+    Description: Secondary Region to deploy the Multi Region Application Architecture
+  
+  AppId:
+    Type: String
+    Description: The Id for the application deployed with the Solution. The Id will be used to query the Routing Layer for the application's state and config properties
+
+  BucketNameToken:
+    Type: String
+    Description: Random token to be used in S3 bucket names
+
+  SendAnonymousData:
+    Type: String
+    Description: A flag instructing whether anonymous operational metrics will be sent to AWS
+
+  SolutionUuid:
+    Type: String
+    Description: Anonymous ID for operational metrics sent to AWS
+
+  PrimaryConsoleBucket:
+    Type: String
+    Description: The S3 bucket holding the sample application in the primary region
+
+  SecondaryConsoleBucket:
+    Type: String
+    Description: The S3 bucket holding the sample application in the secondary region
+
+  UIDomainName:
+    Type: String
+    Description: Domain name from where the UI will be served. Used as the allowed origin by the API.
+
+Conditions:
+
+  # When True - The only resource to be provisioned in this template is the StackCreationPolicy resource. 
+  ShouldProvisionStackPolicy: !Equals [ !Ref ProvisionStackPolicy, 'Yes' ]
+
+  IsPrimaryRegion: !And
+    - !Not [ Condition: IsSecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+  IsSecondaryRegion: !And
+    - !Equals [ !Ref "AWS::Region", !Ref SecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+
+Mappings:
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/SOLUTION_VERSION
+
+Resources:
+
+  RoutingLayer:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub
+        - "https://s3.amazonaws.com/${S3Bucket}-${AWS::Region}/${KeyPrefix}/multi-region-application-architecture-routing-layer.template"
+        - S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+          KeyPrefix: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+      Parameters:
+        ProvisionStackPolicy: !Ref ProvisionStackPolicy
+        SecondaryRegion: !Ref SecondaryRegion
+        ParentStackName: !Ref ParentStackName
+        KeyValueStoreTableName: !GetAtt KeyValueStoreLayer.Outputs.GlobalTableName
+        UserPoolId: !GetAtt IdentityLayer.Outputs.UserPoolId
+        UserPoolClientId: !GetAtt IdentityLayer.Outputs.UserPoolClientId
+        IdentityPoolId: !GetAtt ObjectStoreLayer.Outputs.IdentityPoolId
+        ObjectStoreBucketName: !GetAtt ObjectStoreLayer.Outputs.ObjectStore
+        UIDomainName: !Ref UIDomainName
+        PrimaryConsoleBucket: !Ref PrimaryConsoleBucket
+        SecondaryConsoleBucket: !Ref SecondaryConsoleBucket
+        AppId: !Ref AppId
+        AppApi: !GetAtt AppLayer.Outputs.AppApi
+        SendAnonymousData: !Ref SendAnonymousData
+        SolutionUuid: !Ref SolutionUuid
+
+  AppLayer:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub
+        - "https://s3.amazonaws.com/${S3Bucket}-${AWS::Region}/${KeyPrefix}/multi-region-application-architecture-app-layer.template"
+        - S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+          KeyPrefix: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+      Parameters:
+        ProvisionStackPolicy: !Ref ProvisionStackPolicy
+        SecondaryRegion: !Ref SecondaryRegion
+        ParentStackName: !Ref ParentStackName
+        KeyValueStoreTableName: !GetAtt KeyValueStoreLayer.Outputs.GlobalTableName
+        UserPoolId: !GetAtt IdentityLayer.Outputs.UserPoolId
+        UIDomainName: !Ref UIDomainName
+
+  KeyValueStoreLayer:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub
+        - "https://s3.amazonaws.com/${S3Bucket}-${AWS::Region}/${KeyPrefix}/multi-region-application-architecture-key-value-store-layer.template"
+        - S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+          KeyPrefix: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+      Parameters:
+        ProvisionStackPolicy: !Ref ProvisionStackPolicy
+        SecondaryRegion: !Ref SecondaryRegion
+        ParentStackName: !Ref ParentStackName
+
+  ObjectStoreLayer:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub
+        - "https://s3.amazonaws.com/${S3Bucket}-${AWS::Region}/${KeyPrefix}/multi-region-application-architecture-object-store-layer.template"
+        - S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+          KeyPrefix: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+      Parameters:
+        ProvisionStackPolicy: !Ref ProvisionStackPolicy
+        SecondaryRegion: !Ref SecondaryRegion
+        ParentStackName: !Ref ParentStackName
+        UserPoolId: !GetAtt IdentityLayer.Outputs.UserPoolId
+        UserPoolClientId: !GetAtt IdentityLayer.Outputs.UserPoolClientId
+        UIDomainName: !Ref UIDomainName
+        BucketNameToken: !Ref BucketNameToken
+
+  IdentityLayer:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub
+        - "https://s3.amazonaws.com/${S3Bucket}-${AWS::Region}/${KeyPrefix}/multi-region-application-architecture-identity-layer.template"
+        - S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+          KeyPrefix: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+      Parameters:
+        ProvisionStackPolicy: !Ref ProvisionStackPolicy
+        SecondaryRegion: !Ref SecondaryRegion
+        ParentStackName: !Ref ParentStackName
+        AdminName: !Ref AdminName
+        AdminEmail: !Ref AdminEmail
+        AdminPhoneNumber: !Ref AdminPhoneNumber
+        SolutionUuid: !Ref SolutionUuid
+        SendAnonymousData: !Ref SendAnonymousData
+
+Outputs:
+
+  RoutingLayerPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !GetAtt RoutingLayer.Outputs.StackCreationPolicy
+
+  AppLayerPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !GetAtt AppLayer.Outputs.StackCreationPolicy
+
+  KeyValueStoreLayerPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !GetAtt KeyValueStoreLayer.Outputs.StackCreationPolicy
+
+  ObjectStoreLayerPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !GetAtt ObjectStoreLayer.Outputs.StackCreationPolicy
+
+  IdentityLayerPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !GetAtt IdentityLayer.Outputs.StackCreationPolicy

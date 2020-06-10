@@ -1,0 +1,586 @@
+# Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085r) - The Multi Region Application Architecture Routing Layer deploys backend API for application config service discovery. (Version SOLUTION_VERSION)
+
+Parameters:
+
+  ParentStackName:
+    Type: String
+    Description: The name of the parent stack passed in when this Stack Instance is created. Used to name/identify resources for the StackSet.
+
+  SecondaryRegion:
+    Type: String
+    Description: The Secondary Region in which the application's resources will be deployed.
+
+  ProvisionStackPolicy:
+    Type: String
+    Description: Set this parameter to 'Yes' to provision the IAM Policy necessary to create the resources in this template.
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  
+  UIDomainName:
+    Type: String
+    Description: Domain name from where the UI will be served. Used as the allowed origin by the API.
+  
+  PrimaryConsoleBucket:
+    Type: String
+    Description: Bucket name for where the UI will be served from in the primary region
+  
+  SecondaryConsoleBucket:
+    Type: String
+    Description: Bucket name for where the UI will be served from in the secondary region
+  
+  KeyValueStoreTableName:
+    Type: String
+    Description: Global Table Name for the key-value store layer
+
+  ObjectStoreBucketName:
+    Type: String
+    Description: S3 Bucket name that holds objects 
+  
+  UserPoolId:
+    Type: String
+    Description: "UserPoolId"
+
+  UserPoolClientId:
+    Type: String
+    Description: "UserPoolClientId"
+
+  IdentityPoolId:
+    Type: String
+    Description: "IdentityPoolId"
+  
+  AppId:
+    Type: String
+    Description: The Id for the application deployed with the Solution. The Id will be used to query the Routing Layer for the application's state and config properties
+
+  AppApi:
+    Type: String
+    Description: API for the front-end application to get/post comments on photos
+  
+  SendAnonymousData:
+    Type: String
+    Description: A flag instructing whether anonymous operational metrics will be sent to AWS
+
+  SolutionUuid:
+    Type: String
+    Description: Anonymous ID for operational metrics sent to AWS
+
+Conditions:
+
+  # When True - The only resource to be provisioned in this template is the StackCreationPolicy resource. 
+  ShouldProvisionStackPolicy: !Equals [ !Ref ProvisionStackPolicy, 'Yes' ]
+
+  IsPrimaryRegion: !And
+    - !Not [ Condition: IsSecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+  IsSecondaryRegion: !And
+    - !Equals [ !Ref "AWS::Region", !Ref SecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+  IsEitherRegion: !Or
+      -  Condition: IsPrimaryRegion
+      -  Condition: IsSecondaryRegion
+
+Mappings:
+
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/SOLUTION_VERSION
+
+Resources:
+  #######################################
+  # Stack Creation Custom Policy - Used by 
+  # CloudFormation StackSet Execution Role
+  # to provision the resources in this template
+  #######################################
+  StackCreationPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: ShouldProvisionStackPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W13
+            reason: >- 
+              dynamodb:DescribeLimits - * resource needed for the CfnExecRole to retrieve capacity limits in both the primary and secondary regions for the purpose of creating a global table
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+
+          # Allows the StackSet to pull this solution's lambda packages from s3
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource:
+              - !Join ["", ["arn:aws:s3:::", !FindInMap ["SourceCode", "General", "S3Bucket"], "-", Ref: "AWS::Region", "/", !FindInMap ["SourceCode", "General", "KeyPrefix"], "/routing-configurer.zip"]]
+
+          # Allows the StackSet to manage the DynamoDB tables belonging to this template
+          - Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:DeleteTable
+              - dynamodb:DescribeTable
+            Resource:
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ParentStackName}-multi-region-app-config
+              - !Sub arn:aws:dynamodb:${SecondaryRegion}:${AWS::AccountId}:table/${ParentStackName}-multi-region-app-config
+
+          - Effect: Allow
+            Action:
+              - dynamodb:CreateGlobalTable
+            Resource:
+              - !Sub arn:aws:dynamodb::${AWS::AccountId}:global-table/${ParentStackName}-multi-region-app-config
+          - Effect: Allow
+            Action:
+              - dynamodb:DescribeLimits
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+
+          # Allows the StackSet to manage the Api Gateways that belong to this template
+          - Effect: Allow
+            Action:
+              - apigateway:GET
+              - apigateway:DELETE
+              - apigateway:PATCH
+              - apigateway:POST
+              - apigateway:PUT
+            Resource:
+              - !Sub arn:aws:apigateway:${AWS::Region}::/restapis/*
+              - !Sub arn:aws:apigateway:${SecondaryRegion}::/restapis/*
+              - !Sub arn:aws:apigateway:${AWS::Region}::/restapis
+              - !Sub arn:aws:apigateway:${SecondaryRegion}::/restapis
+
+  #######################################
+  # These resources will be created in both the primary and secondary regions
+  #######################################
+  AppConfigTable:
+    Type: AWS::DynamoDB::Table
+    Condition: IsEitherRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: >- 
+              Explicit name needed for creating a global table from the KeyValueStoreTables in each region
+    Properties:
+      TableName: !Sub ${ParentStackName}-multi-region-app-config
+      AttributeDefinitions:
+        - AttributeName: appId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: appId
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      SSESpecification:
+        SSEEnabled: true
+      BillingMode: PAY_PER_REQUEST
+
+  ApiGatewayAccountLogsRole:
+    Type: AWS::IAM::Role
+    Condition: IsEitherRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Condition: IsEitherRegion
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayAccountLogsRole.Arn
+
+  AppConfigApiRole:
+    Type: AWS::IAM::Role
+    Condition: IsEitherRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-primary-app-config-api-gateway-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - dynamodb:Query
+                Resource: 
+                  - !GetAtt AppConfigTable.Arn
+
+  AppConfigApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Condition: IsEitherRegion
+    Properties:
+      RestApiId: !Ref AppConfigApi
+      Description: "Production"
+      StageName: "prod"
+      StageDescription:
+        AccessLogSetting:
+          DestinationArn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:API-Gateway-Execution-Logs_${AppConfigApi}/prod
+          Format: >- 
+            { "requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "caller":"$context.identity.caller", "user":"$context.identity.user","requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath", "status":"$context.status","protocol":"$context.protocol", "responseLength":"$context.responseLength" }
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W68
+            reason: API is secured with an IAM role
+
+  AppConfigApi:
+    Type: AWS::ApiGateway::RestApi
+    Condition: IsEitherRegion
+    Properties:
+        Name: !Sub ${ParentStackName}-multi-region-app-config-api
+        Description: The Multi Region Application Architecture (Version SOLUTION_VERSION) - Api proxy to DynamoDB table containing application configuration.
+        EndpointConfiguration:
+          Types:
+            - REGIONAL
+        Body:
+          swagger: "2.0"
+          basePath: "/prod"
+          schemes:
+          - "https"
+          paths:
+            /state/{appId}:
+              get:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !GetAtt AppConfigApiRole.Arn
+                  uri: !Sub arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'${UIDomainName}'"
+                      responseTemplates:
+                        application/json: >-
+                          #set($inputRoot = $input.path('$'))
+
+                          #if($inputRoot.Items.size() == 1)
+                              #set($item = $inputRoot.Items.get(0))
+                              {
+                                "state": "$item.state.S"
+                              }
+                          #{else}
+                              {}
+                              ## Return an empty object
+                          #end
+                  requestTemplates:
+                    application/json: 
+                      !Sub |
+                      {
+                          "TableName": "${ParentStackName}-multi-region-app-config",
+                          "KeyConditionExpression": "appId = :v1",
+                          "ExpressionAttributeValues": {
+                              ":v1": {
+                                  "S": "$input.params('appId')"
+                              }
+                          }
+                      }
+                  passthroughBehavior: "never"
+                  httpMethod: "POST"
+                  type: "aws"
+              options:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !GetAtt AppConfigApiRole.Arn
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+                        method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'${UIDomainName}'"
+                  requestTemplates:
+                    application/json: "{\"statusCode\": 200}"
+                  passthroughBehavior: "when_no_match"
+                  type: "mock"
+          definitions:
+            Empty:
+              type: "object"
+              title: "Empty Schema"
+          x-amazon-apigateway-gateway-responses:
+            DEFAULT_4XX:
+              responseTemplates:
+                application/json: "{\"message\":$context.error.messageString}"
+
+  AppStateUpdaterLambda:
+    Type: AWS::Lambda::Function
+    Condition: IsEitherRegion
+    Properties:
+      Description: Updates the state of a multi-region application between 'active', 'fenced' and 'failover'
+      Handler: "state-updater.handler"
+      Role: !GetAtt AppStateUpdaterRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "routing-configurer.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 300
+      Environment:
+        Variables:
+          SEND_METRICS: !Ref SendAnonymousData
+          SOLUTION_ID: SO0085
+          UUID: !Ref SolutionUuid
+          VERSION: SOLUTION_VERSION
+
+  AppStateUpdaterRole:
+    Type: AWS::IAM::Role
+    Condition: IsEitherRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              logs:CreateLogGroup/CreateLogStream/PutLogEvents - requires trailing * on resource to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-${AWS::Region}-AppStateUpdaterPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt AppConfigTable.Arn
+
+  AppConfigWriterLambda:
+    Type: AWS::Lambda::Function
+    Condition: IsEitherRegion
+    Properties:
+      Description: Writes files to the multi-region application's presentation layer S3 bucket to store the API endpoint URLs and app configs
+      Handler: "app-config-writer.handler"
+      Role: !GetAtt AppConfigWriterRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "routing-configurer.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 300
+
+  AppConfigWriterRole:
+    Type: AWS::IAM::Role
+    Condition: IsEitherRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              logs:CreateLogGroup/CreateLogStream/PutLogEvents - requires trailing * on resource to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-${AWS::Region}-AppConfigWriterPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${PrimaryConsoleBucket}/console/primaryApiEndpoint.json"
+                  - !Sub "arn:aws:s3:::${PrimaryConsoleBucket}/console/primaryAppConfig.json"
+                  - !Sub "arn:aws:s3:::${PrimaryConsoleBucket}/console/secondaryApiEndpoint.json"
+                  - !Sub "arn:aws:s3:::${PrimaryConsoleBucket}/console/secondaryAppConfig.json"
+                  - !Sub "arn:aws:s3:::${SecondaryConsoleBucket}/console/primaryApiEndpoint.json"
+                  - !Sub "arn:aws:s3:::${SecondaryConsoleBucket}/console/primaryAppConfig.json"
+                  - !Sub "arn:aws:s3:::${SecondaryConsoleBucket}/console/secondaryApiEndpoint.json"
+                  - !Sub "arn:aws:s3:::${SecondaryConsoleBucket}/console/secondaryAppConfig.json"
+
+  AppConfigWriter:
+    Type: Custom::ApiEndpointWriter
+    Condition: IsEitherRegion
+    Properties:
+      ServiceToken: !GetAtt AppConfigWriterLambda.Arn
+      PrimaryConsoleBucket: !Ref PrimaryConsoleBucket
+      SecondaryConsoleBucket: !Ref SecondaryConsoleBucket
+      CurrentRegion: !Ref "AWS::Region"
+      SecondaryRegion: !Ref SecondaryRegion
+      ApiEndpointGetState: !Sub "https://${AppConfigApi}.execute-api.${AWS::Region}.amazonaws.com/prod/state/"
+      AppId: !Ref AppId
+      AppApi: !Ref AppApi
+      KeyValueStoreTableName: !Ref KeyValueStoreTableName
+      ObjectStoreBucketName: !Ref ObjectStoreBucketName
+      UserPoolId: !Ref UserPoolId
+      UserPoolClientId: !Ref UserPoolClientId
+      IdentityPoolId: !Ref IdentityPoolId
+
+  #######################################
+  # Primary Region Resources
+  #######################################
+
+  AppConfigGlobalTableConfigurerLambda:
+    Type: AWS::Lambda::Function
+    Condition: IsPrimaryRegion
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt AppConfigGlobalTableConfigurerRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "dynamodb-global-table-configurer.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 300
+
+  AppConfigGlobalTableConfigurerRole:
+    Type: AWS::IAM::Role
+    Condition: IsPrimaryRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              logs:CreateLogGroup/CreateLogStream/PutLogEvents - requires trailing * on resource to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-AppConfigGlobalTableConfigurerPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:CreateGlobalTable
+                Resource:
+                  - !Sub arn:aws:dynamodb::${AWS::AccountId}:global-table/${AppConfigTable}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AppConfigTable}
+                  - !Sub arn:aws:dynamodb:${SecondaryRegion}:${AWS::AccountId}:table/${AppConfigTable}
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeLimits
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+
+  AppConfigGlobalTableConfiguration:
+    Type: Custom::AppConfigGlobalTableConfiguration
+    Condition: IsPrimaryRegion
+    Properties:
+      ServiceToken: !GetAtt AppConfigGlobalTableConfigurerLambda.Arn
+      TableName: !Ref AppConfigTable 
+      Regions:
+        - !Ref AWS::Region
+        - !Ref SecondaryRegion
+
+  AppStateUpdater:
+    Type: Custom::AppStateUpdater
+    Condition: IsPrimaryRegion
+    DependsOn: AppConfigGlobalTableConfiguration
+    Properties:
+      ServiceToken: !GetAtt AppStateUpdaterLambda.Arn
+      NewState: "active"
+      TableName: !Ref AppConfigTable
+      AppId: !Ref AppId
+
+Outputs:
+  StackCreationPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !Ref StackCreationPolicy

@@ -1,0 +1,27 @@
+{
+  "name": "user-pool-replicator",
+  "version": "1.0.0",
+  "description": "Backs up Cognito User Pool Users to a DynamoDB table.",
+  "main": "index.js",
+  "scripts": {
+    "package:build": "tsc --project tsconfig.json --outDir .",
+    "clean": "rm -rf node_modules && rm -rf package && rm -rf coverage && rm -rf build",
+    "package": "npm ci && npm run package:build && npm prune --production",
+    "test": "jest --config jestconfig.json --coverage"
+  },
+  "author": "AWS Solutions",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {
+    "aws-lambda": "^1.0.5",
+    "aws-sdk": "^2.606.0",
+    "@types/node": "^13.1.8",
+    "@types/jest": "^24.9.0",
+    "aws-sdk-mock": "^5.0.0",
+    "chai": "^4.2.0",
+    "jest": "^25.1.0",
+    "ts-jest": "^25.0.0",
+    "sinon": "^8.1.0",
+    "typescript": "^3.7.5"
+  }
+}

@@ -7,34 +7,39 @@
 # ./run-unit-tests.sh
 #
 
-# Get reference for all important folders
-template_dir="$PWD"
-source_dir="$template_dir/../source"
+# Get reference for source directory
+source_dir="$PWD/../source"
 
-echo "------------------------------------------------------------------------------"
-echo "[Test] Object Store Layer Custom Resource"
-echo "------------------------------------------------------------------------------"
-cd $source_dir/object-store-layer/custom-resource
-npm install --silent
-npm test
+declare -a lambda_packages=(
+  "dynamodb-global-table-configurer"
+  "presentation-configurer"
+  "routing-configurer"
+  "stack-name-formatter"
+  "stackset-resource"
+  "user-pool-pre-sign-up-trigger"
+  "user-pool-replicator"
+  "user-pool-syncer"
+  "uuid-generator"
+)
 
-echo "------------------------------------------------------------------------------"
-echo "[Test] Serverless App Layer Custom Resource"
-echo "------------------------------------------------------------------------------"
-cd $source_dir/serverless-app-layer/custom-resource
-npm install --silent
-npm test
-
-echo "------------------------------------------------------------------------------"
-echo "[Test] Web App Custom Resource"
-echo "------------------------------------------------------------------------------"
-cd $source_dir/web-app/custom-resource
-npm install --silent
-npm test
-
-echo "------------------------------------------------------------------------------"
-echo "[Test] Web App Layer Custom Resource"
-echo "------------------------------------------------------------------------------"
-cd $source_dir/web-app-layer/custom-resource
-npm install --silent
-npm test
+for lambda_package in "${lambda_packages[@]}"
+do
+    echo "------------------------------------------------------------------------------"
+    echo "Testing $lambda_package"
+    echo "------------------------------------------------------------------------------"
+    cd $source_dir/$lambda_package
+    npm run clean
+    npm ci
+    npm test
+    # Check the result of the npm test and exit if a failed test is identified
+    if [ $? -eq 0 ]
+    then
+      echo "Tests passed for $lambda_package"
+    else
+      echo "******************************************************************************"
+      echo "Tests FAILED for $lambda_package"
+      echo "******************************************************************************"
+      exit 1
+    fi
+    npm run clean
+done

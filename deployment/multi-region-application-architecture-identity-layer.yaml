@@ -1,0 +1,664 @@
+# Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085i) - The Multi Region Identity Layer replicates users from a Cognito User Pool users to a secondary region for Backup and High-Availability use-cases. (Version SOLUTION_VERSION)
+
+Parameters:
+
+  AdminName:
+    Type: String
+    Description: User name for the admin cognito user account that will be created when this solution is provisioned
+    MinLength: 4 
+    MaxLength: 20 
+    AllowedPattern: '[a-zA-Z0-9-]+'
+    ConstraintDescription: AdminName must be a minimum of 4 characters and cannot include spaces
+
+  AdminEmail:
+    Type: String
+    Description: Email address for the admin cognito user account that will be created when this solution is provisioned
+    MinLength: 5 
+    AllowedPattern: '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$' 
+    ConstraintDescription: AdminEmail must be a valid email address
+
+  AdminPhoneNumber:
+    Type: String
+    Description: Phone Number for the admin cognito user account that will be created when this solution is provisioned specified in the format +12345678999
+    MinLength: 12 
+    MaxLength: 12 
+
+  ParentStackName:
+    Type: String
+    Description: The name of the parent stack passed in when this Stack Instance is created. Used to name/identify resources for the StackSet.
+
+  SecondaryRegion:
+    Type: String
+    Description: The Secondary Region the backup Cognito User Pool should be created in.
+
+  ProvisionStackPolicy:
+    Type: String
+    Description: Set this parameter to 'Yes' to provision the IAM Policy necessary to create the resources in this template.
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+
+  SendAnonymousData:
+    Type: String
+    Description: A flag instructing whether anonymous operational metrics will be sent to AWS
+
+  SolutionUuid:
+    Type: String
+    Description: Anonymous ID for operational metrics sent to AWS
+
+Conditions:
+
+  # When True - The only resource to be provisioned in this template is the StackCreationPolicy resource. 
+  ShouldProvisionStackPolicy: !Equals [ !Ref ProvisionStackPolicy, 'Yes' ]
+
+  IsPrimaryRegion: !And
+    - !Not [ Condition: IsSecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+  IsSecondaryRegion: !And
+    - !Equals [ !Ref "AWS::Region", !Ref SecondaryRegion ]
+    - !Not [ Condition: ShouldProvisionStackPolicy ]
+
+Mappings:
+
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/SOLUTION_VERSION
+
+Resources:
+
+  #######################################
+  # Stack Creation Custom Policy - Used by 
+  # CloudFormation StackSet Execution Role
+  # to provision the resources in this template
+  #######################################
+  StackCreationPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: ShouldProvisionStackPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W13
+            reason: >- 
+              * resource is required for several actions as resources will be created by StackSets later and the name cannot be determined when this policy is created
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+
+          # Allows the StackSet to manage Cognito resources that belong to this template
+          - Effect: Allow
+            Action:
+              - cognito-idp:CreateUserPool
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - cognito-idp:AdminCreateUser
+              - cognito-idp:AdminDeleteUser
+              - cognito-idp:CreateUserPoolClient
+              - cognito-idp:DeleteUserPoolClient
+              - cognito-idp:DeleteUserPool
+            Resource:
+              - !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*
+              - !Sub arn:aws:cognito-idp:${SecondaryRegion}:${AWS::AccountId}:userpool/*
+
+          # Allows the StackSet to manage Lambda functions that belong to this template
+          - Effect: Allow
+            Action:
+              - lambda:CreateFunction
+              - lambda:DeleteFunction
+              - lambda:InvokeFunction
+              - lambda:GetFunction
+              - lambda:GetFunctionConfiguration
+              - lambda:AddPermission
+              - lambda:RemovePermission
+            Resource:
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*
+              - !Sub arn:aws:lambda:${SecondaryRegion}:${AWS::AccountId}:function:*
+          
+          # Allows the StackSet to manage IAM roles that belong to this template
+          - Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:PassRole
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+
+          # Allows the StackSet to pull this solution's lambda packages from s3
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource:
+              - !Join ["", ["arn:aws:s3:::", !FindInMap ["SourceCode", "General", "S3Bucket"], "-", Ref: "AWS::Region", "/", !FindInMap ["SourceCode", "General", "KeyPrefix"], "/user-pool-replicator.zip"]]
+              - !Join ["", ["arn:aws:s3:::", !FindInMap ["SourceCode", "General", "S3Bucket"], "-", Ref: "AWS::Region", "/", !FindInMap ["SourceCode", "General", "KeyPrefix"], "/dynamodb-global-table-configurer.zip"]]
+              - !Join ["", ["arn:aws:s3:::", !FindInMap ["SourceCode", "General", "S3Bucket"], "-", Ref: "SecondaryRegion", "/", !FindInMap ["SourceCode", "General", "KeyPrefix"], "/user-pool-syncer.zip"]]
+
+          # Allows the StackSet to create and configure the CloudWatch Event Schedule that triggers the user pool syncer Lambda function
+          - Effect: Allow
+            Action:
+              - events:PutRule
+              - events:DescribeRule
+              - events:PutTargets
+              - events:DeleteRule
+              - events:RemoveTargets
+            Resource:
+              - !Sub arn:aws:events:${SecondaryRegion}:${AWS::AccountId}:rule/*
+
+          # Allows the StackSet to Create and Configure a DynamoDB Global Table
+          - Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:DeleteTable
+              - dynamodb:DescribeTable
+            Resource:
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ParentStackName}-user-pool-replica-table
+              - !Sub arn:aws:dynamodb:${SecondaryRegion}:${AWS::AccountId}:table/${ParentStackName}-user-pool-replica-table
+
+          - Effect: Allow
+            Action:
+              - dynamodb:CreateGlobalTable
+            Resource:
+              - !Sub arn:aws:dynamodb::${AWS::AccountId}:global-table/${ParentStackName}-user-pool-replica-table
+          - Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+              - dynamodb:DescribeLimits
+            Resource:
+              - '*'
+
+  #######################################
+  # Primary Region Resources
+  #######################################
+
+  PrimaryUserPool:
+    Type: AWS::Cognito::UserPool
+    Condition: IsPrimaryRegion
+    Properties:
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: True
+      Schema:
+      - Name: email
+        AttributeDataType: String
+        Required: true
+        Mutable: false
+      - Name: id
+        AttributeDataType: String
+        Required: false
+        Mutable: true
+      LambdaConfig:
+        PostAuthentication: !GetAtt PostAuthenticationLambdaTrigger.Arn
+      AutoVerifiedAttributes:
+        - email
+      UserPoolAddOns:
+        AdvancedSecurityMode: ENFORCED
+  
+  PrimaryUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: IsPrimaryRegion
+    Properties:
+        GenerateSecret: False
+        UserPoolId: !Ref PrimaryUserPool
+
+  CognitoUser:
+    Type: "AWS::Cognito::UserPoolUser"
+    Condition: IsPrimaryRegion
+    Properties:
+      DesiredDeliveryMediums:
+        - EMAIL
+      ForceAliasCreation: true
+      UserAttributes:
+        - Name: email
+          Value: !Ref AdminEmail
+        - Name: email_verified
+          Value: 'True'
+        - Name: phone_number
+          Value: !Ref AdminPhoneNumber
+        - Name: phone_number_verified
+          Value: 'True'
+      Username: !Ref AdminName
+      UserPoolId: !Ref PrimaryUserPool
+
+  PostAuthenticationLambdaTrigger:
+    Type: AWS::Lambda::Function
+    Condition: IsPrimaryRegion
+    Properties:
+      Description: Cognito UserPool PostConfirmation Trigger to backup user information to a dynamodb table. 
+      Handler: index.handler
+      Role: !GetAtt PostAuthenticationLambdaTriggerRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "user-pool-replicator.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 60
+      Environment:
+        Variables:
+          USER_POOL_REPLICA_TABLE: !Sub ${ParentStackName}-user-pool-replica-table
+
+  CognitoLambdaTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsPrimaryRegion
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt PostAuthenticationLambdaTrigger.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt PrimaryUserPool.Arn
+
+  PostAuthenticationLambdaTriggerRole:
+    Type: AWS::IAM::Role
+    Condition: IsPrimaryRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              logs:CreateLogGroup/CreateLogStream/PutLogEvents - requires trailing * on resource to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-post-confirmation-trigger-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                Resource:
+                  !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ParentStackName}-user-pool-replica-table
+
+  PrimaryUserPoolTable:
+    Type: AWS::DynamoDB::Table
+    Condition: IsPrimaryRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: >- 
+              DynamoDB Global Table requires explicit name to ensure table name are consistent across regional replica tables
+    Properties:
+      TableName: !Sub ${ParentStackName}-user-pool-replica-table
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: importState
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      GlobalSecondaryIndexes:
+        - IndexName: importState
+          KeySchema:
+            - AttributeName: importState
+              KeyType: HASH
+          Projection:
+              ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      BillingMode: PAY_PER_REQUEST
+
+  DynamoDBGlobalTableConfigurerLambda:
+    Type: AWS::Lambda::Function
+    Condition: IsPrimaryRegion
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt DynamoDBGlobalTableConfigurerRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "dynamodb-global-table-configurer.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 300
+
+  DynamoDBGlobalTableConfigurerRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              dynamodb:DescribeLimits requires a resource of "*" to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-DynamoDBGlobalTableConfigurerPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:CreateGlobalTable
+                Resource:
+                  - !Sub arn:aws:dynamodb::${AWS::AccountId}:global-table/${ParentStackName}-user-pool-replica-table
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ParentStackName}-user-pool-replica-table
+                  - !Sub arn:aws:dynamodb:${SecondaryRegion}:${AWS::AccountId}:table/${ParentStackName}-user-pool-replica-table
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeLimits
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+
+  DynamoDBGlobalTableConfiguration:
+    Type: Custom::DynamoDBGlobalTableConfiguration
+    Condition: IsPrimaryRegion
+    Properties:
+      ServiceToken: !GetAtt DynamoDBGlobalTableConfigurerLambda.Arn
+      TableName: !Ref PrimaryUserPoolTable
+      Regions:
+        - !Ref AWS::Region
+        - !Ref SecondaryRegion
+
+  #######################################
+  # Secondary Region Resources
+  #######################################
+
+  SecondaryUserPool:
+    Type: AWS::Cognito::UserPool
+    Condition: IsSecondaryRegion
+    Properties:
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: True
+      Schema:
+      - Name: email
+        AttributeDataType: String
+        Required: true
+        Mutable: false
+      - Name: id
+        AttributeDataType: String
+        Required: false
+        Mutable: true
+      LambdaConfig:
+        PreSignUp: !GetAtt PreSignUpLambdaTrigger.Arn
+      AutoVerifiedAttributes:
+        - email
+      UserPoolAddOns:
+        AdvancedSecurityMode: ENFORCED
+
+  SecondaryUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: IsSecondaryRegion
+    Properties:
+        GenerateSecret: False
+        UserPoolId: !Ref SecondaryUserPool
+
+  UserPoolSyncerInvokeSchedule:
+    Type: AWS::Events::Rule
+    Condition: IsSecondaryRegion
+    Properties:
+        Description: Rule to invoke the UserPoolSyncer Lambda function on a schedule
+        State: ENABLED
+        ScheduleExpression: rate(5 minutes)
+        Targets:
+          - Arn: !GetAtt UserPoolSyncerLambda.Arn
+            Id: !Ref UserPoolSyncerLambda
+
+  UserPoolSyncerInvokeSchedulePermission:
+      Type: AWS::Lambda::Permission
+      Condition: IsSecondaryRegion
+      Properties:
+        FunctionName: !GetAtt UserPoolSyncerLambda.Arn
+        Action: lambda:InvokeFunction
+        Principal: events.amazonaws.com
+        SourceArn: !GetAtt UserPoolSyncerInvokeSchedule.Arn
+
+  UserPoolSyncerLambda:
+    Type: AWS::Lambda::Function
+    Condition: IsSecondaryRegion
+    Properties:
+      Description: Syncs Congito Users from a DynamoDB table to a Cognito User Pool. 
+      Handler: index.handler
+      Role: !GetAtt UserPoolSyncerRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "SecondaryRegion"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "user-pool-syncer.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 60
+      Environment:
+        Variables:
+          Region: !Ref SecondaryRegion
+          UserPoolId: !Ref SecondaryUserPool
+          MfaEnabled: false
+          UserPoolTableName: !Sub ${ParentStackName}-user-pool-replica-table
+          CloudWatchLogsRoleArn: !GetAtt CognitoImportCloudWatchLogsRole.Arn
+          Uuid: !Ref SolutionUuid
+          SolutionId: SO0087
+          Version: SOLUTION_VERSION
+          SendMetrics: !Ref SendAnonymousData
+
+  UserPoolSyncerRole:
+    Type: AWS::IAM::Role
+    Condition: IsSecondaryRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              logs:CreateLogGroup/CreateLogStream/PutLogEvents - requires trailing * on resource to avoid creating a circular dependency between resources
+              cognito-idp:GetCSVHeader/StartUserImportJob/CreateUserImportJob/DescribeUserImportJob - requires trailing * on resource to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-user-pool-syncer-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${SecondaryRegion}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource:
+                  !Sub arn:aws:dynamodb:${SecondaryRegion}:${AWS::AccountId}:table/${ParentStackName}-user-pool-replica-table
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  !Sub arn:aws:dynamodb:${SecondaryRegion}:${AWS::AccountId}:table/${ParentStackName}-user-pool-replica-table/index/importState
+              - Effect: Allow
+                Action:
+                  - cognito-idp:GetCSVHeader
+                  - cognito-idp:StartUserImportJob
+                  - cognito-idp:CreateUserImportJob
+                  - cognito-idp:DescribeUserImportJob
+                Resource:
+                  !Sub arn:aws:cognito-idp:${SecondaryRegion}:${AWS::AccountId}:userpool/*
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub ${CognitoImportCloudWatchLogsRole.Arn}
+
+  CognitoImportCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Condition: IsSecondaryRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              logs:CreateLogGroup/CreateLogStream/DescribeLogStreams/PutLogEvents - requires trailing * on resource to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cognito-idp.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-CognitoImportCloudWatchLogsRole
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub arn:aws:logs:${SecondaryRegion}:${AWS::AccountId}:log-group:/aws/cognito/*
+
+  SecondaryUserPoolTable:
+    Type: AWS::DynamoDB::Table
+    Condition: IsSecondaryRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: >- 
+              DynamoDB Global Table requires explicit name to ensure table name are consistent across regional replica tables
+    Properties:
+      TableName: !Sub ${ParentStackName}-user-pool-replica-table
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: importState
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      GlobalSecondaryIndexes:
+        - IndexName: importState
+          KeySchema:
+            - AttributeName: importState
+              KeyType: HASH
+          Projection:
+              ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      BillingMode: PAY_PER_REQUEST
+
+  PreSignUpLambdaTrigger:
+    Type: AWS::Lambda::Function
+    Condition: IsSecondaryRegion
+    Properties:
+      Description: Cognito User Pool Pre Sign-Up Trigger to deny user sign-ups in the secondary region.
+      Handler: index.handler
+      Role: !GetAtt PreSignUpLambdaTriggerRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "user-pool-pre-sign-up-trigger.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 60
+
+  PreSignUpLambdaTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsSecondaryRegion
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt PreSignUpLambdaTrigger.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt SecondaryUserPool.Arn
+
+  PreSignUpLambdaTriggerRole:
+    Type: AWS::IAM::Role
+    Condition: IsSecondaryRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              logs:CreateLogGroup/CreateLogStream/PutLogEvents - requires trailing * on resource to avoid creating a circular dependency between resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-pre-sign-up-trigger-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+
+Outputs:
+
+  StackCreationPolicy:
+    Condition: ShouldProvisionStackPolicy
+    Value: !Ref StackCreationPolicy
+
+  UserPoolId:
+    Value: !If [ ShouldProvisionStackPolicy, "", !If [ IsPrimaryRegion, !Ref PrimaryUserPool, !Ref SecondaryUserPool]]
+
+  UserPoolClientId:
+    Value: !If [ ShouldProvisionStackPolicy, "", !If [ IsPrimaryRegion, !Ref PrimaryUserPoolClient, !Ref SecondaryUserPoolClient]]
