@@ -21,10 +21,10 @@
 # misc
 **/npm-debug.log
 **/testem.log
-**/package-lock.json
 **/.vscode/settings.json
 **/*.zip
 **/*local-runner*
+**/*create-stack.sh
 
 # System Files
 **/.DS_Store
