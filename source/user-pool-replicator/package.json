@@ -13,15 +13,15 @@
   "license": "Apache-2.0",
   "dependencies": {},
   "devDependencies": {
-    "aws-lambda": "^1.0.5",
-    "aws-sdk": "^2.606.0",
-    "@types/node": "^13.1.8",
     "@types/jest": "^24.9.0",
+    "@types/node": "^13.13.15",
+    "aws-lambda": "^1.0.5",
+    "aws-sdk": "^2.726.0",
     "aws-sdk-mock": "^5.0.0",
     "chai": "^4.2.0",
     "jest": "^25.1.0",
-    "ts-jest": "^25.0.0",
     "sinon": "^8.1.0",
-    "typescript": "^3.7.5"
+    "ts-jest": "^25.0.0",
+    "typescript": "^3.9.7"
   }
 }
