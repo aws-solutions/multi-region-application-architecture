@@ -1,0 +1,429 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Multi-Region Application Architecture
+#
+# template for multi-region-application-architecture
+# **DO NOT DELETE**
+#
+# author: aws-solutions-builder@
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085ui) - A demo UI for Multi-Region Application Architecture
+
+Parameters:
+  AdminName:
+    Type: String
+    MinLength: 4 
+    MaxLength: 20 
+    AllowedPattern: '[a-zA-Z0-9-]+'
+    ConstraintDescription: AdminName must be a minimum of 4 characters and cannot include spaces
+
+  AdminEmail:
+    Type: String
+    MinLength: 5 
+    AllowedPattern: '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$' 
+    ConstraintDescription: AdminEmail must be a valid email address
+  
+  SolutionStackName:
+    Type: String
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Demo UI Configuration
+        Parameters:
+          - AdminName
+          - AdminEmail
+          - SolutionStackName
+    ParameterLabels:
+      AdminName:
+        default: User name for the Cognito user that will be created
+      AdminEmail:
+        default: Email address for the Cognito user that will be created
+      SolutionStackName:
+        default: The name of the stack used to deploy the main solution's resources
+
+Mappings:
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET_PLACEHOLDER
+      KeyPrefix: SOLUTION_NAME_PLACEHOLDER/SOLUTION_VERSION_PLACEHOLDER
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: True
+        InviteMessageTemplate:
+          EmailMessage:
+            !Sub |
+              <p>
+                Please sign in to the Multi-Region Application Architecture Demo UI using the temporary credentials below:<br />
+                https://${ConsoleCloudFront.DomainName}
+              </p>
+              <p>
+                Username: <strong>{username}</strong><br />
+                Temporary Password: <strong>{####}</strong>
+              </p>
+          EmailSubject: "[Multi-Region Application Architecture] Demo UI Login Information"
+        UnusedAccountValidityDays: 7
+      AutoVerifiedAttributes:
+        - email
+      EmailVerificationSubject: "[Multi-Region Application Architecture] Demo UI Verification Code"
+      EmailVerificationMessage:
+        !Sub |
+          <p>
+            Your verification code is <strong>{####}</strong>.
+          </p>
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: True
+          RequireNumbers: True
+          RequireSymbols: True
+          RequireUppercase: True
+      UserPoolAddOns:
+        AdvancedSecurityMode: ENFORCED
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+        GenerateSecret: False
+        UserPoolId: !Ref UserPool
+
+  CognitoUser:
+    Type: AWS::Cognito::UserPoolUser
+    DependsOn: PresentationConfigurer
+    Properties:
+      DesiredDeliveryMediums:
+        - EMAIL
+      ForceAliasCreation: true
+      UserAttributes:
+        - Name: email
+          Value: !Ref AdminEmail
+        - Name: email_verified
+          Value: 'True'
+      Username: !Ref AdminName
+      UserPoolId: !Ref UserPool
+
+  ConsoleLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Logging not enabled, as this is the logging destination for the other s3 buckets in this template."
+          - id: W51
+            reason: "Policy not required for this bucket since public access is blocked."
+
+  ConsoleBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref ConsoleLogsBucket
+        LogFilePrefix: console-bucket-access/
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ConsoleBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ConsoleBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt ConsoleOriginAccessIdentity.S3CanonicalUserId
+            Action: 
+              - s3:GetObject
+            Resource: 
+              - !Sub arn:aws:s3:::${ConsoleBucket}/*
+          - Effect: Deny
+            Action: s3:*
+            Resource:
+            - !Sub arn:aws:s3:::${ConsoleBucket}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: False
+            Principal: "*"
+
+  ConsoleOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub access-identity-${ConsoleBucket}
+
+  ConsoleCloudFront:
+   Type: AWS::CloudFront::Distribution
+   Metadata:
+    cfn_nag:
+      rules_to_suppress:
+        - id: W70
+          reason: "CloudFront automatically sets the security policy to TLSv1 when the distribution uses the CloudFront domain name (CloudFrontDefaultCertificate=true)"
+   Properties:
+     DistributionConfig:
+       Comment: "Website distribution for Multi-Region Application Architecture Demo UI"
+       Logging:
+         IncludeCookies: false
+         Bucket: !Sub ${ConsoleBucket}.s3.${AWS::Region}.amazonaws.com
+         Prefix: cloudfront-logs/
+       Origins:
+         - Id: console
+           DomainName: !Sub ${ConsoleBucket}.s3.${AWS::Region}.amazonaws.com
+           OriginPath: /console
+           S3OriginConfig:
+             OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${ConsoleOriginAccessIdentity}
+       DefaultCacheBehavior:
+         TargetOriginId: console
+         AllowedMethods:
+           - GET
+           - HEAD
+           - OPTIONS
+         CachedMethods:
+           - GET
+           - HEAD
+           - OPTIONS
+         ForwardedValues:
+           QueryString: false
+         ViewerProtocolPolicy: https-only
+       IPV6Enabled: true
+       DefaultRootObject: index.html
+       ViewerCertificate:
+         CloudFrontDefaultCertificate: true
+       Enabled: true
+       HttpVersion: http2
+
+  PresentationConfigurerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: CFN Lambda backed custom resource to create buckets for the Presentation Layer and copy the files into them
+      Handler: "source/index.handler"
+      Role: !GetAtt PresentationConfigurerRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "presentation-configurer.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 300
+
+  PresentationConfigurerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-PresentationConfigurerPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub ${ConsoleBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Join ["", ["arn:aws:s3:::",!FindInMap ["SourceCode", "General", "S3Bucket"], "-", Ref: "AWS::Region","/*"]]
+
+  PresentationConfigurer:
+    Type: Custom::PresentationConfigurer
+    Properties:
+      ServiceToken: !GetAtt PresentationConfigurerLambda.Arn
+      SrcBucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+      SrcPath: !FindInMap ["SourceCode", "General", "KeyPrefix"]
+      ManifestFile: console-manifest.json
+      ConsoleBucket: !Ref ConsoleBucket
+      PrimaryRoutingLayerEndpoint: !Sub
+        - "https://${PrimaryRoutingLayerApiId}.execute-api.${AWS::Region}.amazonaws.com/prod"
+        - PrimaryRoutingLayerApiId:
+            Fn::ImportValue:
+              !Sub ${SolutionStackName}-PrimaryRoutingLayerApiId
+      PrimaryPhotosApiEndpoint: !Sub 
+        - "https://${PrimaryPhotosApiId}.execute-api.${AWS::Region}.amazonaws.com/prod"
+        - PrimaryPhotosApiId:
+            Fn::ImportValue:
+              !Sub ${SolutionStackName}-PrimaryPhotosApiId
+      PrimaryObjectStoreBucket:
+        Fn::ImportValue:
+          !Sub ${SolutionStackName}-PrimaryObjectStoreBucket
+      PrimaryRegion: !Ref AWS::Region
+      SecondaryRoutingLayerEndpoint: !Sub
+        - "https://${SecondaryRoutingLayerApiId}.execute-api.${SecondaryRegion}.amazonaws.com/prod"
+        - SecondaryRoutingLayerApiId:
+            Fn::ImportValue:
+              !Sub ${SolutionStackName}-SecondaryRoutingLayerApiId
+          SecondaryRegion:
+            Fn::ImportValue:
+              !Sub ${SolutionStackName}-SecondaryRegion
+      SecondaryPhotosApiEndpoint: !Sub
+        - "https://${SecondaryPhotosApiId}.execute-api.${SecondaryRegion}.amazonaws.com/prod"
+        - SecondaryPhotosApiId:
+            Fn::ImportValue:
+              !Sub ${SolutionStackName}-SecondaryPhotosApiId
+          SecondaryRegion:
+            Fn::ImportValue:
+              !Sub ${SolutionStackName}-SecondaryRegion
+      SecondaryObjectStoreBucket:
+        Fn::ImportValue:
+          !Sub ${SolutionStackName}-SecondaryObjectStoreBucket
+      SecondaryRegion:
+        Fn::ImportValue:
+          !Sub ${SolutionStackName}-SecondaryRegion
+      AppId:
+        Fn::ImportValue:
+          !Sub ${SolutionStackName}-SampleApplicationAppId
+      IdentityPoolId: !Ref IdentityPool
+      UserPoolClientId: !Ref UserPoolClient
+      UserPoolId: !Ref UserPool
+      UIRegion: !Ref AWS::Region
+
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !Sub cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+
+  IdentityPoolAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt UserPoolAuthenticatedRole.Arn
+
+  UserPoolAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+      Policies:
+        - PolicyName: AuthenticatedRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              # See the "Inline policy for the Auth_Role" section of the amplify storage documentation: https://aws-amplify.github.io/docs/js/storage.
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub
+                    - arn:aws:s3:::${PrimaryObjectStoreBucket}/public/*
+                    - PrimaryObjectStoreBucket:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-PrimaryObjectStoreBucket
+                  - !Sub
+                    - arn:aws:s3:::${SecondaryObjectStoreBucket}/public/*
+                    - SecondaryObjectStoreBucket:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-SecondaryObjectStoreBucket
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub
+                    - arn:aws:s3:::${PrimaryObjectStoreBucket}
+                    - PrimaryObjectStoreBucket:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-PrimaryObjectStoreBucket
+                  - !Sub
+                    - arn:aws:s3:::${SecondaryObjectStoreBucket}
+                    - SecondaryObjectStoreBucket:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-SecondaryObjectStoreBucket
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - public/
+                      - public/*
+              - Effect: Allow
+                Action:
+                  - execute-api:Invoke
+                  - execute-api:ManageConnections
+                Resource:
+                  - !Sub
+                    - "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PrimaryRoutingLayerApiId}/prod/*"
+                    - PrimaryRoutingLayerApiId:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-PrimaryRoutingLayerApiId
+                  - !Sub
+                    - "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PrimaryPhotosApiId}/prod/*"
+                    - PrimaryPhotosApiId:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-PrimaryPhotosApiId
+                  - !Sub
+                    - "arn:aws:execute-api:${SecondaryRegion}:${AWS::AccountId}:${SecondaryRoutingLayerApiId}/prod/*"
+                    - SecondaryRoutingLayerApiId:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-SecondaryRoutingLayerApiId
+                      SecondaryRegion:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-SecondaryRegion
+                  - !Sub
+                    - "arn:aws:execute-api:${SecondaryRegion}:${AWS::AccountId}:${SecondaryPhotosApiId}/prod/*"
+                    - SecondaryPhotosApiId:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-SecondaryPhotosApiId
+                      SecondaryRegion:
+                        Fn::ImportValue:
+                          !Sub ${SolutionStackName}-SecondaryRegion
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+
+  IdentityPoolId:
+    Value: !Ref IdentityPool
+
+  ConsoleUrl:
+    Value: !Sub https://${ConsoleCloudFront.DomainName}

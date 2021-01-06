@@ -3,6 +3,6 @@
       "^.+\\.(t|j)sx?$": "ts-jest"
   },
   "moduleFileExtensions": [ "ts", "tsx", "js", "jsx", "json", "node" ],
-  "coveragePathIgnorePatterns": [ "/node_modules/", "/build" ],
-  "modulePathIgnorePatterns": [ "/node_modules/", "/build" ]
+  "coveragePathIgnorePatterns": [ "/node_modules/", "/build", "/package" ],
+  "modulePathIgnorePatterns": [ "/node_modules/", "/build", "/package" ]
 }

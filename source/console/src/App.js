@@ -1,20 +1,12 @@
-/*******************************************************************************
- * Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved. 
- *
- * Licensed under the Amazon Software License (the "License").
- * You may not use this file except in compliance with the License.
- * A copy of the License is located at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0    
- *
- * or in the "license" file accompanying this file. This file is distributed
- * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language governing
- * permissions and limitations under the License.
- *
- ********************************************************************************/
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * @author Solution Builders
+ */
 
 import React from 'react';
+import Amplify from 'aws-amplify';
 import { Auth, Storage } from 'aws-amplify'
 import { PhotoPicker, withAuthenticator } from 'aws-amplify-react'
 import { Button, Modal, ProgressBar, Navbar } from 'react-bootstrap'
@@ -35,29 +27,74 @@ library.add(
 )
 
 class App extends React.Component {
-
   constructor(props) {
     super(props)
     this.signOut = this.signOut.bind(this)
     this.beginUploadImageWorkflow = this.beginUploadImageWorkflow.bind(this)
 
     this.state = {
+      showImageGallery: false,
       showUploadImageModal: false,
       uploadInProgress: false,
       username: '',
-      region: props.region,
+      region: '',
       primaryAppStateUrl: props.primaryAppStateUrl,
       secondaryAppStateUrl: props.secondaryAppStateUrl,
-      isSecondaryRegion: props.isSecondaryRegion
+      appConfig: props.appConfig
     }
   }
 
   async componentDidMount() {
-    let user = await Auth.currentAuthenticatedUser()
+    let user = await Auth.currentAuthenticatedUser();
+    let appState = await Utils.getAppState(this.state.primaryAppStateUrl, this.state.secondaryAppStateUrl);
+    appState = appState.toUpperCase();
 
-    this.setState({
-      username: user.username
-    })
+    const uiState = { username: user.username, showImageGallery: true };
+    const amplifyConfig = {
+      Storage: {
+        AWSS3: {
+          identityPoolId: this.state.appConfig.identityPoolId,
+        },
+        level: 'public'
+      },
+      API: {
+        endpoints: [
+          {
+            name: 'PrimaryAppState',
+            endpoint: this.state.primaryAppStateUrl,
+            region: this.state.appConfig.primary.region
+          },
+          {
+            name: 'SecondaryAppState',
+            endpoint: this.state.secondaryAppStateUrl,
+            region: this.state.appConfig.secondary.region
+          }
+        ]
+      }
+    };
+
+    switch (appState) {
+      case 'FENCED':
+      case 'ACTIVE':
+        uiState.isSecondaryRegion = false;
+        uiState.region = this.state.appConfig.primary.region;
+        amplifyConfig.Storage.AWSS3.bucket = this.state.appConfig.primary.objectStoreBucketName;
+        amplifyConfig.Storage.AWSS3.region = this.state.appConfig.primary.region;
+        amplifyConfig.API.endpoints.push({ name: 'PhotosApi', endpoint: this.state.appConfig.primary.photosApi, region: this.state.appConfig.primary.region });
+        break;
+      case 'FAILOVER':
+        uiState.isSecondaryRegion = true;
+        uiState.region = this.state.appConfig.secondary.region;
+        amplifyConfig.Storage.AWSS3.bucket = this.state.appConfig.secondary.objectStoreBucketName;
+        amplifyConfig.Storage.AWSS3.region = this.state.appConfig.secondary.region;
+        amplifyConfig.API.endpoints.push({ name: 'PhotosApi', endpoint: this.state.appConfig.secondary.photosApi, region: this.state.appConfig.secondary.region });
+        break;
+      default:
+        throw new Error(`Unsupported app state: ${appState}`);
+    }
+
+    Amplify.configure(amplifyConfig);
+    this.setState(uiState);
   }
 
   signOut() {
@@ -66,20 +103,32 @@ class App extends React.Component {
   }
 
   async beginUploadImageWorkflow() {
-    let state = await Utils.getAppState(this.state.primaryAppStateUrl, this.state.secondaryAppStateUrl);
-    state = state.toUpperCase();
+    let appState = await Utils.getAppState(this.state.primaryAppStateUrl, this.state.secondaryAppStateUrl);
+    appState = appState.toUpperCase();
 
-    if (state !== 'ACTIVE') {
-      alert('New photos can not currently be uploaded. Please try again in a few minutes')
-      return
-    } else if (this.state.isSecondaryRegion) {
-      // At the time the UI was loaded, the application was in FAILOVER mode so the UI is
-      // targeting back-end resources in the secondary region. S3 cross-region replication
-      // is one way (primary -> secondary) so we prevent the user from uploading photos that will
-      // not be replicated from the secondary region to the primary. Refreshing the UI will
-      // target back-end resources in the primary region.
-      alert('Please refresh the application to enable photo uploads');
-      return;
+    switch (appState) {
+      case 'FENCED':
+        // Write operations are not permitted when the application is in fenced mode
+        alert('New photos can not currently be uploaded. Please try again in a few minutes')
+        return;
+      case 'ACTIVE':
+        if (this.state.isSecondaryRegion) {
+          // When the application is in ACTIVE mode, only allow write operations when the 
+          // front-end is targeting the primary region
+          alert('Please refresh the application to enable photo uploads');
+          return;
+        }
+        break;
+      case 'FAILOVER':
+        if (!this.state.isSecondaryRegion) {
+          // When the application is in FAILOVER mode, only allow write operations when the 
+          // front-end is targeting the secondary region
+          alert('Please refresh the application to enable photo uploads');
+          return;
+        }
+        break;
+      default:
+        throw new Error(`Unsupported app state: ${appState}`);
     }
 
     this.setState({ showUploadImageModal: true })
@@ -109,7 +158,7 @@ class App extends React.Component {
       <div>
         <Navbar bg="dark" variant="dark">
           <Navbar.Brand href="/"> <FontAwesomeIcon icon={faAws} size="lg" color="#FF9900" id="logo" />Current Region: {this.state.region}</Navbar.Brand>
-          <Button variant="link" className='nav-link' onClick={() => this.beginUploadImageWorkflow()}>
+          <Button variant="link" id="upload-image-btn" className='nav-link' onClick={() => this.beginUploadImageWorkflow()}>
             <FontAwesomeIcon icon={faUpload} /> Upload Image
           </Button>
           <Navbar.Collapse className="justify-content-end">
@@ -121,7 +170,7 @@ class App extends React.Component {
         </Navbar>
 
         <div className="main">
-          <Gallery user={this.state.username} primaryAppStateUrl={this.state.primaryAppStateUrl} secondaryAppStateUrl={this.state.secondaryAppStateUrl} isSecondaryRegion={this.state.isSecondaryRegion}/>
+          {this.state.showImageGallery && <Gallery user={this.state.username} primaryAppStateUrl={this.state.primaryAppStateUrl} secondaryAppStateUrl={this.state.secondaryAppStateUrl} isSecondaryRegion={this.state.isSecondaryRegion} />}
         </div>
 
 

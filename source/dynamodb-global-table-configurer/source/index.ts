@@ -1,6 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * @author Solution Builders
+ */
+
 import { CompletionStatus, StatusTypes, ICustomResourceRequest, IResourceProperties } from "./custom-resource-handler";
 
 const AWS = require('aws-sdk');
@@ -9,18 +13,18 @@ const axios = require('axios')
 async function handleCreate(props: IResourceProperties): Promise<CompletionStatus> {
   try {
     const dynamoDb = new AWS.DynamoDB({ region: props.Regions[0] })
-  
+
     const replicationGroup = props.Regions.map(region => {
       return {
         RegionName: region
       }
     })
-  
+
     await dynamoDb.createGlobalTable({
       GlobalTableName: props.TableName,
       ReplicationGroup: replicationGroup
     }).promise()
-  
+
     return {
       Status: StatusTypes.Success,
       Data: { Message: 'Successfully configured the DynamoDB Global Table' }
@@ -51,7 +55,7 @@ async function processEvent(event) {
   let response
 
   try {
-    switch ( event.RequestType) {
+    switch (event.RequestType) {
       case 'Create':
         response = await handleCreate(event.ResourceProperties)
         break
@@ -68,7 +72,7 @@ async function processEvent(event) {
       Data: error
     }
   }
-  
+
   return response
 }
 
@@ -83,7 +87,7 @@ function withTimeout(func, timeoutMillis): Promise<CompletionStatus> {
     }, timeoutMillis)
   })
 
-  return Promise.race([ func, timeout ]).then(result => {
+  return Promise.race([func, timeout]).then(result => {
     clearTimeout(timeoutId)
     return result
   })
@@ -93,22 +97,22 @@ function sendResponse(event: ICustomResourceRequest, logStreamName: string, resp
   console.log(`sending response status: '${response.Status}' to CFN with data: ${JSON.stringify(response.Data)}`)
 
   const reason = `See the details in CloudWatch Log Stream: ${logStreamName}`
-  
+
   const responseBody = JSON.stringify({
-      Status: response.Status.toString(),
-      Reason: reason,
-      PhysicalResourceId: event.LogicalResourceId,
-      StackId: event.StackId,
-      RequestId: event.RequestId,
-      LogicalResourceId: event.LogicalResourceId,
-      Data: response.Data,
+    Status: response.Status.toString(),
+    Reason: reason,
+    PhysicalResourceId: event.LogicalResourceId,
+    StackId: event.StackId,
+    RequestId: event.RequestId,
+    LogicalResourceId: event.LogicalResourceId,
+    Data: response.Data,
   })
 
   const config = {
-      headers: {
-          "content-type": "",
-          "content-length": responseBody.length
-      }
+    headers: {
+      "content-type": "",
+      "content-length": responseBody.length
+    }
   }
 
   return axios.put(event.ResponseURL, responseBody, config)

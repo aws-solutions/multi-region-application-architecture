@@ -1,21 +1,12 @@
-/*******************************************************************************
- * Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved. 
- *
- * Licensed under the Amazon Software License (the "License").
- * You may not use this file except in compliance with the License.
- * A copy of the License is located at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0    
- *
- * or in the "license" file accompanying this file. This file is distributed
- * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language governing
- * permissions and limitations under the License.
- *
- ********************************************************************************/
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * @author Solution Builders
+ */
 
 import React from 'react';
-import { API, Auth } from 'aws-amplify';
+import { API } from 'aws-amplify';
 import { Form, Button, Col } from 'react-bootstrap'
 
 import * as uuid from 'uuid'
@@ -56,14 +47,8 @@ export default class Comments extends React.Component {
 
     try {
       let photoId = this.props.imageKey
-      console.log(`getting comments for photo: ${photoId}`)
 
-      let params = {
-        headers: { Authorization: `Bearer ${(await Auth.currentSession()).getIdToken().getJwtToken()}` }
-      }
-
-      const response = await API.get('PhotosApi', `/comments/${photoId}`, params);
-      console.log(`comments: ${JSON.stringify(response)}`)
+      const response = await API.get('PhotosApi', `/comments/${photoId}`, {});
       return response.comments
     } catch (err) {
       console.log(err)
@@ -78,18 +63,32 @@ export default class Comments extends React.Component {
   }
 
   async beginCreateCommentWorkflow() {
-    let state = await Utils.getAppState(this.props.primaryAppStateUrl, this.props.secondaryAppStateUrl);
-    state = state.toUpperCase();
+    let appState = await Utils.getAppState(this.props.primaryAppStateUrl, this.props.secondaryAppStateUrl);
+    appState = appState.toUpperCase();
 
-    if (state !== 'ACTIVE') {
-      alert('Comments cannot currently be added. Please try again in a few minutes')
-      return;
-    } else if (this.state.isSecondaryRegion) {
-      // At the time the UI was loaded, the application was in FAILOVER mode so the UI is
-      // targeting back-end resources in the secondary region. Refreshing the UI will
-      // target back-end resources in the primary region.
-      alert('Please refresh the application to enable comments');
-      return;
+    switch (appState) {
+      case 'FENCED':
+        // Write operations are not permitted when the application is in fenced mode
+        alert('Comments cannot currently be added. Please try again in a few minutes')
+        return;
+      case 'ACTIVE':
+        if (this.state.isSecondaryRegion) {
+          // When the application is in ACTIVE mode, only allow write operations when the 
+          // front-end is targeting the primary region
+          alert('Please refresh the application to enable comments');
+          return;
+        }
+        break;
+      case 'FAILOVER':
+        if (!this.state.isSecondaryRegion) {
+          // When the application is in FAILOVER mode, only allow write operations when the 
+          // front-end is targeting the secondary region
+          alert('Please refresh the application to enable comments');
+          return;
+        }
+        break;
+      default:
+        throw new Error(`Unsupported app state: ${appState}`);
     }
 
     await this.createComment();
@@ -101,10 +100,8 @@ export default class Comments extends React.Component {
       let photoId = this.props.imageKey
       let message = this.commentInput.current.value
       let user = this.props.user
-      console.log(`${user} created new comment: ${message} for photo: ${photoId}`)
 
       let params = {
-        headers: { Authorization: `Bearer ${(await Auth.currentSession()).getIdToken().getJwtToken()}` },
         body: {
           commentId,
           photoId,
@@ -151,10 +148,10 @@ export default class Comments extends React.Component {
         <Form className='commentsForm'>
           <Form.Row>
             <Col>
-              <Form.Control type="text" placeholder="Add Comment" ref={this.commentInput} onChange={() => this.handleCommentChanged()} />
+              <Form.Control type="text" placeholder="Add Comment" id="add-comment-input" ref={this.commentInput} onChange={() => this.handleCommentChanged()} />
             </Col>
             <Col sm={2}>
-              <Button variant="primary" onClick={() => this.beginCreateCommentWorkflow()}>
+              <Button variant="primary" id="create-comment-btn" onClick={() => this.beginCreateCommentWorkflow()}>
                 Create
               </Button>
             </Col>

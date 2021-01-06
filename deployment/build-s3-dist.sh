@@ -35,9 +35,9 @@ mkdir -p $template_dist_dir
 rm -rf $build_dist_dir
 mkdir -p $build_dist_dir
 
-SUB1="s/CODE_BUCKET/$1/g"
-SUB2="s/SOLUTION_NAME/$2/g"
-SUB3="s/SOLUTION_VERSION/$3/g"
+SUB1="s/CODE_BUCKET_PLACEHOLDER/$1/g"
+SUB2="s/SOLUTION_NAME_PLACEHOLDER/$2/g"
+SUB3="s/SOLUTION_VERSION_PLACEHOLDER/$3/g"
 
 for FULLNAME in ./*.yaml
 do
@@ -53,10 +53,7 @@ declare -a lambda_packages=(
   "presentation-configurer"
   "routing-configurer"
   "stack-name-formatter"
-  "stackset-resource"
-  "user-pool-pre-sign-up-trigger"
-  "user-pool-replicator"
-  "user-pool-syncer"
+  "stackset-output-consolidator"
   "uuid-generator"
 )
 
@@ -66,10 +63,7 @@ do
   echo "Building $lambda_package"
   echo "------------------------------------------------------------------------------"
   cd $source_dir/$lambda_package
-  npm run clean
-  mkdir package
-  rsync -r --exclude=*.spec.ts source/ ./package/ && cp package.json package-lock.json tsconfig.json ./package
-  cd package && npm run package
+  npm run package
   # Check the result of the package step and exit if a failure is identified
   if [ $? -eq 0 ]
   then
@@ -80,6 +74,7 @@ do
     echo "******************************************************************************"
     exit 1
   fi
+  cd package
   zip -q -r9 $build_dist_dir/$lambda_package.zip *
 done
 
@@ -101,3 +96,5 @@ cd $build_dist_dir
 manifest=(`find console -type f | sed 's|^./||'`)
 manifest_json=$(IFS=,;printf "%s" "${manifest[*]}")
 echo "[\"$manifest_json\"]" | sed 's/,/","/g' > ./console-manifest.json
+
+cd $template_dir

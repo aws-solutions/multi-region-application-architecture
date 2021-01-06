@@ -1,6 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * @author Solution Builders
+ */
+
 const awsMock = require('aws-sdk-mock');
 const axios = require('axios');
 const sinon = require('sinon');
@@ -13,12 +17,7 @@ describe('Presentation Configurer Lambda', () => {
         axiosMock = new MockAdapter(axios);
         const emptySpy = sinon.spy((_, callback) => callback(null, {}));
 
-        awsMock.mock('S3', 'createBucket', emptySpy);
-        awsMock.mock('S3', 'headBucket', emptySpy);
-        awsMock.mock('S3', 'putBucketAcl', emptySpy);
-        awsMock.mock('S3', 'putBucketEncryption', emptySpy);
-        awsMock.mock('S3', 'putPublicAccessBlock', emptySpy);
-        awsMock.mock('S3', 'putBucketLogging', emptySpy);
+        awsMock.mock('S3', 'putObject', emptySpy);
         awsMock.mock('S3', 'copyObject', emptySpy);
 
         // Placeholder array to serve as the console manifest
@@ -49,12 +48,24 @@ describe('Presentation Configurer Lambda', () => {
         const resp = await lambdaFunction.handler({
             RequestType: 'Create',
             ResourceProperties: {
-                FormattedStackName: 'test',
-                PrimaryRegion: 'primary-region',
-                SecondaryRegion: 'secondary-region',
-                BucketNameToken: '123456789012',
                 SrcBucket: 'src-bucket',
-                SrcPath: 'src-path'
+                SrcPath: 'src-path',
+                ManifestFile: 'manifest-file',
+                DestBucket: 'dest-bucekt',
+                ConsoleBucket: 'console-bucket',
+                PrimaryRoutingLayerEndpoint: 'primary-routing-endpoint',
+                PrimaryPhotosApiEndpoint: 'primary-photos-endpoint',
+                PrimaryObjectStoreBucket: 'primary-object-store-bucket',
+                PrimaryRegion: 'us-east-1',
+                SecondaryRoutingLayerEndpoint: 'secondary-routing-endpoint',
+                SecondaryPhotosApiEndpoint: 'secondary-photos-endpoint',
+                SecondaryObjectStoreBucket: 'secondary-object-store-bucket',
+                SecondaryRegion: 'us-east-2',
+                IdentityPoolId: 'identity-pool-id',
+                UserPoolClientId: 'client-id',
+                UserPoolId: 'user-pool-id',
+                UIRegion: 'us-west-2',
+                AppId: 'app-id'
             }
         }, { getRemainingTimeInMillis: () => { return 1000; } });
 

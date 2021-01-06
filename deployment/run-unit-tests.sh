@@ -11,14 +11,12 @@
 source_dir="$PWD/../source"
 
 declare -a lambda_packages=(
+  "utils"
   "dynamodb-global-table-configurer"
   "presentation-configurer"
   "routing-configurer"
   "stack-name-formatter"
-  "stackset-resource"
-  "user-pool-pre-sign-up-trigger"
-  "user-pool-replicator"
-  "user-pool-syncer"
+  "stackset-output-consolidator"
   "uuid-generator"
 )
 
@@ -41,5 +39,4 @@ do
       echo "******************************************************************************"
       exit 1
     fi
-    npm run clean
 done

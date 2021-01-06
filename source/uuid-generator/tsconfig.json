@@ -2,10 +2,9 @@
   "compilerOptions": {
     "target": "es6",
     "module": "commonjs",
-    "outDir": "build",
+    "outDir": "package",
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "rootDir": ".",
     "sourceMap": true
   },
   "include": [

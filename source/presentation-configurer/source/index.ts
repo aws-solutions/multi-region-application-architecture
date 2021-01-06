@@ -1,155 +1,69 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { CompletionStatus, StatusTypes, ICustomResourceRequest, IResourceProperties, ICustomResourceResponseData } from "./custom-resource-handler";
+/**
+ * @author Solution Builders
+ */
+
+import { CompletionStatus, StatusTypes, ICustomResourceRequest, IResourceProperties } from "./custom-resource-handler";
 
 const axios = require('axios')
 import * as AWS from 'aws-sdk';
 
-async function createBuckets(fomattedStackName: string, primaryRegion: string, secondaryRegion: string, bucketNameToken: string): Promise<ICustomResourceResponseData> {
-  const createdBuckets: ICustomResourceResponseData = { PrimaryBucketName: null, PrimaryLogBucketName: null, SecondaryBucketName: null, SecondaryLogBucketName: null };
-
-  // Create the log buckets
-  await Promise.all([primaryRegion, secondaryRegion].map(async (region) => {
-    const s3 = new AWS.S3({ region });
-    const bucketName = `${fomattedStackName}-presentation-${bucketNameToken}-${region}-logs`;
-    let params: any = { Bucket: bucketName };
-
-    if (region !== 'us-east-1') {
-      params['CreateBucketConfiguration'] = { LocationConstraint: region };
-    }
-
-    region === primaryRegion ? createdBuckets.PrimaryLogBucketName = bucketName : createdBuckets.SecondaryLogBucketName = bucketName;
-
-    console.log(`Creating bucket: ${JSON.stringify(params)}`);
-    await s3.createBucket(params).promise();
-
-    params = { Bucket: bucketName };
-    console.log(`Checking if bucket exists: ${JSON.stringify(params)}`);
-    await s3.headBucket(params).promise();
-
-    console.log(`Successfully created bucket: ${JSON.stringify(params)}`);
-
-    params = {
-      Bucket: bucketName,
-      ACL: 'log-delivery-write'
-    };
-    console.log(`Putting bucket ACL: ${JSON.stringify(params)}`);
-    await s3.putBucketAcl(params).promise();
-    console.log(`Successfully put bucket ACL: ${JSON.stringify(params)}`);
-
-    params = {
-      Bucket: bucketName,
-      ServerSideEncryptionConfiguration: {
-        Rules: [
-          {
-            ApplyServerSideEncryptionByDefault: { SSEAlgorithm: 'aws:kms' }
-          }
-        ]
-      }
-    };
-    console.log(`Putting bucket encryption: ${JSON.stringify(params)}`)
-    await s3.putBucketEncryption(params).promise();
-    console.log(`Successfully put bucket encryption: ${JSON.stringify(params)}`);
-
-    params = {
-      Bucket: bucketName,
-      PublicAccessBlockConfiguration: {
-        BlockPublicAcls: true,
-        BlockPublicPolicy: true,
-        IgnorePublicAcls: true,
-        RestrictPublicBuckets: true
-      }
-    };
-    console.log(`Putting public access block: ${JSON.stringify(params)}`)
-    await s3.putPublicAccessBlock(params).promise();
-    console.log(`Successfully put public access block: ${JSON.stringify(params)}`);
-
-    console.log(`Bucket Created: ${bucketName}`);
-  }));
-
-  // Create the console buckets
-  await Promise.all([primaryRegion, secondaryRegion].map(async (region) => {
-    const s3 = new AWS.S3({ region });
-    const bucketName = `${fomattedStackName}-presentation-${bucketNameToken}-${region}`;
-    let params: any = { Bucket: bucketName };
-
-    if (region !== 'us-east-1') {
-      params['CreateBucketConfiguration'] = { LocationConstraint: region };
-    }
-
-    region === primaryRegion ? createdBuckets.PrimaryBucketName = bucketName : createdBuckets.SecondaryBucketName = bucketName;
-
-    console.log(`Creating bucket: ${JSON.stringify(params)}`);
-    await s3.createBucket(params).promise();
-
-    params = { Bucket: bucketName };
-    console.log(`Checking if bucket exists: ${JSON.stringify(params)}`);
-    await s3.headBucket(params).promise();
-
-    console.log(`Successfully created bucket: ${JSON.stringify(params)}`);
-
-    params = {
-      Bucket: bucketName,
-      BucketLoggingStatus: {
-        LoggingEnabled: {
-          TargetBucket: region === secondaryRegion ? createdBuckets.SecondaryLogBucketName : createdBuckets.PrimaryLogBucketName,
-          TargetPrefix: 'console-bucket-access/'
-        }
-      }
-    };
-    console.log(`Putting bucket logging: ${JSON.stringify(params)}`)
-    await s3.putBucketLogging(params).promise();
-    console.log(`Successfully put bucket logging: ${JSON.stringify(params)}`);
-
-    console.log(`Bucket Created: ${bucketName}`);
-  }));
-
-  return Promise.resolve(createdBuckets);
-}
-
 export async function handleCreate(props: IResourceProperties): Promise<CompletionStatus> {
   const s3 = new AWS.S3();
 
-  try {
-    const bucketNames = await createBuckets(props.FormattedStackName, props.PrimaryRegion, props.SecondaryRegion, props.BucketNameToken);
-    console.log(`Buckets created: ${JSON.stringify(bucketNames)}`);
+  // get file manifest from s3
+  const getManifestParams = {
+    Bucket: props.SrcBucket,
+    Key: `${props.SrcPath}/${props.ManifestFile}`
+  };
 
-    // get file manifest from s3
-    const params = {
-      Bucket: props.SrcBucket,
-      Key: `${props.SrcPath}/${props.ManifestFile}`
+  const data = await s3.getObject(getManifestParams).promise();
+  const manifest: string[] = JSON.parse(data.Body.toString());
+  console.log('Manifest:', JSON.stringify(manifest, null, 2));
+
+  // Loop through manifest and copy files to the destination buckets
+  await Promise.all(manifest.map(async (file) => {
+    let params = {
+      Bucket: props.ConsoleBucket,
+      CopySource: `${props.SrcBucket}/${props.SrcPath}/${file}`,
+      Key: file
     };
 
-    const data = await s3.getObject(params).promise();
-    const manifest: string[] = JSON.parse(data.Body.toString());
-    console.log('Manifest:', JSON.stringify(manifest, null, 2));
+    console.log(`Copying: ${JSON.stringify(params)}`);
+    let resp = await s3.copyObject(params).promise();
+    console.log('file copied to s3: ', resp);
+  }));
 
-    // Loop through manifest and copy files to the destination buckets
-    await Promise.all(manifest.map(async (file) => {
-      let params = {
-        Bucket: bucketNames.PrimaryBucketName,
-        CopySource: `${props.SrcBucket}/${props.SrcPath}/${file}`,
-        Key: file
-      };
+  await s3.putObject({
+    Bucket: props.ConsoleBucket,
+    Key: 'console/uiConfig.json',
+    Body: Buffer.from(JSON.stringify({
+      identityPoolId: props.IdentityPoolId,
+      userPoolClientId: props.UserPoolClientId,
+      userPoolId: props.UserPoolId,
+      uiRegion: props.UIRegion,
+      primary: {
+        stateUrl: `${props.PrimaryRoutingLayerEndpoint}/state/${props.AppId}`,
+        objectStoreBucketName: props.PrimaryObjectStoreBucket,
+        photosApi: props.PrimaryPhotosApiEndpoint,
+        region: props.PrimaryRegion
+      },
+      secondary: {
+        stateUrl: `${props.SecondaryRoutingLayerEndpoint}/state/${props.AppId}`,
+        objectStoreBucketName: props.SecondaryObjectStoreBucket,
+        photosApi: props.SecondaryPhotosApiEndpoint,
+        region: props.SecondaryRegion
+      }
+    }))
+  }).promise();
+  console.log('Successfully wrote uiConfig.json');
 
-      console.log(`Copying: ${JSON.stringify(params)}`);
-      let resp = await s3.copyObject(params).promise();
-      console.log('file copied to s3: ', resp);
-
-      params.Bucket = bucketNames.SecondaryBucketName;
-      console.log(`Copying: ${JSON.stringify(params)}`);
-      resp = await s3.copyObject(params).promise();
-      console.log('file copied to s3: ', resp);
-    }));
-
-    return Promise.resolve({
-      Status: StatusTypes.Success,
-      Data: bucketNames
-    })
-  } catch (err) {
-    throw err;
-  }
+  return Promise.resolve({
+    Status: StatusTypes.Success,
+    Data: { Message: 'Successfully configured Demo UI' }
+  });
 }
 
 async function handleUpdate(): Promise<CompletionStatus> {
@@ -251,9 +165,8 @@ exports.handler = async (event: ICustomResourceRequest, context) => {
       Status: StatusTypes.Failed,
       Data: error
     }
-  } finally {
-    //console.log(result)
-    const response = await sendResponse(event, context.logStreamName, result)
-    return response.status
   }
+
+  const response = await sendResponse(event, context.logStreamName, result);
+  return response.status;
 }

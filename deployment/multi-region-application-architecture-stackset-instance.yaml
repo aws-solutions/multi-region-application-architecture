@@ -1,0 +1,781 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Multi-Region Application Architecture
+#
+# template for multi-region-application-architecture
+# **DO NOT DELETE**
+#
+# author: aws-solutions-builder@
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: (SO0085ssi) - StackSet instance for Multi-Region Application Architecture (Version SOLUTION_VERSION_PLACEHOLDER)
+
+Parameters:
+  ParentStackName:
+    Type: String
+    Description: The name of the parent stack passed in when this Stack Instance is created. Used to name/identify resources for the StackSet.
+
+  SecondaryRegion:
+    Type: String
+    Description: The Secondary Region the backup Cognito User Pool should be created in.
+
+  BucketNameToken:
+    Type: String
+    Description: Random token to be used in S3 bucket names
+
+  AppId:
+    Type: String
+    Description: The Id for the application deployed with the Solution. The Id will be used to query the Routing Layer for the application's state and config properties
+
+  SendAnonymousData:
+    Type: String
+    Description: A flag instructing whether anonymous operational metrics will be sent to AWS
+
+  SolutionUuid:
+    Type: String
+    Description: Anonymous ID for operational metrics sent to AWS
+
+Conditions:
+  IsSecondaryRegion: !Equals [ !Ref "AWS::Region", !Ref SecondaryRegion ]
+  IsPrimaryRegion: !Not [ Condition: IsSecondaryRegion ]
+
+Mappings:
+  SourceCode:
+    General:
+      S3Bucket: CODE_BUCKET_PLACEHOLDER
+      KeyPrefix: SOLUTION_NAME_PLACEHOLDER/SOLUTION_VERSION_PLACEHOLDER
+
+Resources:
+  ApiGatewayAccountLogsRole:
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              Using * resource as log group names will contain the randomly-generated API Ids
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        # Policy modeled after AmazonAPIGatewayPushToCloudWatchLogs managed policy
+        - PolicyName: !Sub ${ParentStackName}-api-gateway-logs
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                  - logs:GetLogEvents
+                  - logs:FilterLogEvents
+                Resource:
+                  - '*'
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayAccountLogsRole.Arn
+
+  PhotosApiGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-api-gateway-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${KeyValueStoreTable}
+              - Effect: Allow
+                Action: 
+                  - dynamodb:Query
+                Resource: 
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${KeyValueStoreTable}/index/photoId
+
+  PhotosApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref PhotosApi
+      Description: "Production"
+      StageName: "prod"
+      StageDescription:
+        AccessLogSetting:
+          DestinationArn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:API-Gateway-Execution-Logs_${PhotosApi}/prod
+          Format: >- 
+            { "requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "caller":"$context.identity.caller", "user":"$context.identity.user","requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath", "status":"$context.status","protocol":"$context.protocol", "responseLength":"$context.responseLength" }
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W68
+            reason: API is secured with IAM
+
+  PhotosApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+        Name: !Sub ${ParentStackName}-photos-api
+        Description: The Multi Region Application Architecture (Version SOLUTION_VERSION_PLACEHOLDER) - Api proxy to DynamoDB table containing photo comments
+        EndpointConfiguration:
+          Types:
+            - REGIONAL
+        Body:
+          swagger: "2.0"
+          basePath: "/prod"
+          schemes:
+          - "https"
+          paths:
+            /comments/{photoId}:
+              get:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                security:
+                  - sigv4: []
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !GetAtt PhotosApiGatewayRole.Arn
+                  uri: !Sub arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'*'"
+                      responseTemplates:
+                        application/json: >-
+                          #set($inputRoot = $input.path('$'))
+                          {
+                            "comments": [
+                              #foreach($elem in $inputRoot.Items) {
+                                "commentId": "$elem.commentId.S",
+                                "user": "$elem.user.S",
+                                "message": "$elem.message.S"
+                              }#if($foreach.hasNext),#end
+                            #end
+                            ]
+                          }
+                  requestTemplates:
+                    application/json: 
+                      !Sub |
+                      {
+                        "TableName": "${KeyValueStoreTable}",
+                        "IndexName": "photoId",
+                        "KeyConditionExpression": "photoId = :v1",
+                        "ExpressionAttributeValues": {
+                          ":v1": {
+                            "S": "$input.params('photoId')"
+                          }
+                        }
+                      }
+                  passthroughBehavior: "never"
+                  httpMethod: "POST"
+                  type: "aws"
+              post:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                security:
+                  - sigv4: []
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !Sub ${PhotosApiGatewayRole.Arn}
+                  uri: !Sub arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST'"
+                        method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'*'"
+                  requestTemplates:
+                    application/json:
+                      !Sub |
+                      { 
+                        "TableName": "${KeyValueStoreTable}",
+                        "Item": {
+                          "commentId": {
+                            "S": "$input.path('$.commentId')"
+                          },
+                          "photoId": {
+                            "S": "$input.path('$.photoId')"
+                          },
+                          "user": {
+                            "S": "$input.path('$.user')"
+                          },
+                          "message": {
+                            "S": "$input.path('$.message')"
+                          }
+                        }
+                      }
+                  passthroughBehavior: "never"
+                  httpMethod: "POST"
+                  type: "aws"
+              options:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !GetAtt PhotosApiGatewayRole.Arn
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST'"
+                        method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'*'"
+                  requestTemplates:
+                    application/json: "{\"statusCode\": 200}"
+                  passthroughBehavior: "when_no_match"
+                  type: "mock"
+          securityDefinitions:
+            sigv4:
+              type: "apiKey"
+              name: "Authorization"
+              in: "header"
+              x-amazon-apigateway-authtype: "awsSigv4"
+          definitions:
+            Empty:
+              type: "object"
+              title: "Empty Schema"
+          x-amazon-apigateway-gateway-responses:
+            DEFAULT_4XX:
+              responseTemplates:
+                application/json: "{\"message\":$context.error.messageString}"
+
+  KeyValueStoreTable:
+    Type: AWS::DynamoDB::Table
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: >- 
+              Explicit name needed for creating a global table from the KeyValueStoreTables in each region
+          - id: W78
+            reason: >- 
+              PITR not needed for this reference architecture
+    Properties:
+      TableName: !Sub ${ParentStackName}-${BucketNameToken}-key-value-store
+      AttributeDefinitions:
+        - AttributeName: commentId
+          AttributeType: S
+        - AttributeName: photoId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: commentId
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      GlobalSecondaryIndexes:
+        - IndexName: photoId
+          KeySchema:
+            - AttributeName: photoId
+              KeyType: HASH
+          Projection:
+              ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      BillingMode: PAY_PER_REQUEST
+
+  ObjectStoreLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${ParentStackName}-${BucketNameToken}-${AWS::Region}-logs
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Logging not enabled, as this is the logging destination for the other s3 buckets in this template."
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  ObjectStoreBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${ParentStackName}-${BucketNameToken}-${AWS::Region}
+      CorsConfiguration:
+        CorsRules: 
+          - AllowedMethods:
+              - GET
+              - POST
+              - PUT
+            AllowedOrigins:
+              - "*"
+            AllowedHeaders:
+              - '*'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref ObjectStoreLogsBucket
+        LogFilePrefix: !If [ IsPrimaryRegion, "primary-object-store/", "secondary-object-store/" ]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      ReplicationConfiguration:
+        !If
+          - IsSecondaryRegion
+          - !Ref AWS::NoValue
+          - Role: !GetAtt ReplicationRole.Arn
+            Rules:
+              - Prefix: ''
+                Status: Enabled
+                Destination:
+                    Bucket: !Sub arn:aws:s3:::${ParentStackName}-${BucketNameToken}-${SecondaryRegion}
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W51
+            reason: "Policy not required for this bucket."
+
+  AppConfigTable:
+    Type: AWS::DynamoDB::Table
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: >- 
+              Explicit name needed for creating a global table from the KeyValueStoreTables in each region
+          - id: W78
+            reason: >- 
+              PITR not needed for this reference architecture
+    Properties:
+      TableName: !Sub ${ParentStackName}-${BucketNameToken}-app-config
+      AttributeDefinitions:
+        - AttributeName: appId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: appId
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      SSESpecification:
+        SSEEnabled: true
+      BillingMode: PAY_PER_REQUEST
+
+  RoutingLayerApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-routing-layer-api-gateway-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - dynamodb:Query
+                Resource: 
+                  - !GetAtt AppConfigTable.Arn
+
+  RoutingLayerApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref RoutingLayerApi
+      Description: "Production"
+      StageName: "prod"
+      StageDescription:
+        AccessLogSetting:
+          DestinationArn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:API-Gateway-Execution-Logs_${RoutingLayerApi}/prod
+          Format: >- 
+            { "requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "caller":"$context.identity.caller", "user":"$context.identity.user","requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath", "status":"$context.status","protocol":"$context.protocol", "responseLength":"$context.responseLength" }
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W68
+            reason: API is secured with an IAM role
+
+  RoutingLayerApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+        Name: !Sub ${ParentStackName}-routing-layer-api
+        Description: The Multi Region Application Architecture (Version SOLUTION_VERSION_PLACEHOLDER) - Routing Layer - Api proxy to DynamoDB table containing application configuration.
+        EndpointConfiguration:
+          Types:
+            - REGIONAL
+        Body:
+          swagger: "2.0"
+          basePath: "/prod"
+          schemes:
+          - "https"
+          paths:
+            /state/{appId}:
+              get:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                security:
+                  - sigv4: []
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !GetAtt RoutingLayerApiRole.Arn
+                  uri: !Sub arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'*'"
+                      responseTemplates:
+                        application/json: >-
+                          #set($inputRoot = $input.path('$'))
+
+                          #if($inputRoot.Items.size() == 1)
+                              #set($item = $inputRoot.Items.get(0))
+                              {
+                                "state": "$item.state.S"
+                              }
+                          #{else}
+                              {}
+                              ## Return an empty object
+                          #end
+                  requestTemplates:
+                    application/json: 
+                      !Sub |
+                      {
+                          "TableName": "${AppConfigTable}",
+                          "KeyConditionExpression": "appId = :v1",
+                          "ExpressionAttributeValues": {
+                              ":v1": {
+                                  "S": "$input.params('appId')"
+                              }
+                          }
+                      }
+                  passthroughBehavior: "never"
+                  httpMethod: "POST"
+                  type: "aws"
+              options:
+                consumes:
+                - "application/json"
+                produces:
+                - "application/json"
+                responses:
+                  "200":
+                    description: "200 response"
+                    schema:
+                      $ref: "#/definitions/Empty"
+                    headers:
+                      Access-Control-Allow-Origin:
+                        type: "string"
+                      Access-Control-Allow-Methods:
+                        type: "string"
+                      Access-Control-Allow-Headers:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !GetAtt RoutingLayerApiRole.Arn
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+                        method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                        method.response.header.Access-Control-Allow-Origin: !Sub "'*'"
+                  requestTemplates:
+                    application/json: "{\"statusCode\": 200}"
+                  passthroughBehavior: "when_no_match"
+                  type: "mock"
+          securityDefinitions:
+            sigv4:
+              type: "apiKey"
+              name: "Authorization"
+              in: "header"
+              x-amazon-apigateway-authtype: "awsSigv4"
+          definitions:
+            Empty:
+              type: "object"
+              title: "Empty Schema"
+          x-amazon-apigateway-gateway-responses:
+            DEFAULT_4XX:
+              responseTemplates:
+                application/json: "{\"message\":$context.error.messageString}"
+
+  AppStateUpdaterLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Updates the state of a multi-region application between 'active', 'fenced' and 'failover'
+      Handler: "routing-configurer/state-updater.handler"
+      Role: !GetAtt AppStateUpdaterRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "routing-configurer.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 60
+      Environment:
+        Variables:
+          SEND_METRICS: !Ref SendAnonymousData
+          SOLUTION_ID: SO0085
+          UUID: !Ref SolutionUuid
+          VERSION: SOLUTION_VERSION_PLACEHOLDER
+
+  AppStateUpdaterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-${AWS::Region}-AppStateUpdaterPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt AppConfigTable.Arn
+
+  #######################################
+  # Primary Region Resources
+  #######################################
+  GlobalTableConfigurerLambda:
+    Type: AWS::Lambda::Function
+    Condition: IsPrimaryRegion
+    Properties:
+      Handler: "source/index.handler"
+      Role: !GetAtt GlobalTableConfigurerRole.Arn
+      Code:
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"],  "dynamodb-global-table-configurer.zip"]]
+      Runtime:  nodejs12.x
+      Timeout: 300
+
+  GlobalTableConfigurerRole:
+    Type: AWS::IAM::Role
+    Condition: IsPrimaryRegion
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: >- 
+              dynamodb:DescribeLimits requires permissions on all resources
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ParentStackName}-GlobalTableConfigurerPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*
+              - Effect: Allow
+                Action:
+                  - dynamodb:CreateGlobalTable
+                Resource:
+                  - !Sub arn:aws:dynamodb::${AWS::AccountId}:global-table/${KeyValueStoreTable}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${KeyValueStoreTable}
+                  - !Sub arn:aws:dynamodb:${SecondaryRegion}:${AWS::AccountId}:table/${KeyValueStoreTable}
+                  - !Sub arn:aws:dynamodb::${AWS::AccountId}:global-table/${AppConfigTable}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AppConfigTable}
+                  - !Sub arn:aws:dynamodb:${SecondaryRegion}:${AWS::AccountId}:table/${AppConfigTable}
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeLimits
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+
+  KeyValueStoreGlobalTableConfiguration:
+    Type: Custom::KeyValueStoreGlobalTableConfiguration
+    Condition: IsPrimaryRegion
+    Properties:
+      ServiceToken: !GetAtt GlobalTableConfigurerLambda.Arn
+      TableName: !Ref KeyValueStoreTable 
+      Regions:
+        - !Ref AWS::Region
+        - !Ref SecondaryRegion
+
+  AppConfigGlobalTableConfiguration:
+    Type: Custom::AppConfigGlobalTableConfiguration
+    DependsOn: KeyValueStoreGlobalTableConfiguration
+    Condition: IsPrimaryRegion
+    Properties:
+      ServiceToken: !GetAtt GlobalTableConfigurerLambda.Arn
+      TableName: !Ref AppConfigTable 
+      Regions:
+        - !Ref AWS::Region
+        - !Ref SecondaryRegion
+
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Condition: IsPrimaryRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: MultiRegionObjectLayerS3ReplicationPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${ParentStackName}-${BucketNameToken}-${AWS::Region}
+                  - !Sub arn:aws:s3:::${ParentStackName}-${BucketNameToken}-${AWS::Region}/*
+              - Effect: Allow
+                Action:
+                  - s3:ReplicateObject
+                  - s3:ReplicateDelete
+                  - s3:ReplicateTags
+                  - s3:GetObjectVersionTagging
+                Resource:
+                  - !Sub arn:aws:s3:::${ParentStackName}-${BucketNameToken}-${SecondaryRegion}
+                  - !Sub arn:aws:s3:::${ParentStackName}-${BucketNameToken}-${SecondaryRegion}/*
+
+  AppStateUpdater:
+    Type: Custom::AppStateUpdater
+    Condition: IsPrimaryRegion
+    DependsOn: AppConfigGlobalTableConfiguration
+    Properties:
+      ServiceToken: !GetAtt AppStateUpdaterLambda.Arn
+      NewState: "active"
+      TableName: !Ref AppConfigTable
+      AppId: !Ref AppId
+
+Outputs:
+  PhotosApiId:
+    Description: ID for the Photos API. Used to store and retrieve photo comments
+    Value: !Ref PhotosApi
+
+  RoutingLayerApiId:
+    Description: ID for the Routing Layer API. Used to retrieve and update the application's state (active/fenced/failover)
+    Value: !Ref RoutingLayerApi
+
+  KeyValueStoreTableName:
+    Description: Name of DynamoDB Global Table that stores photo comments
+    Value: !Ref KeyValueStoreTable
+
+  ObjectStoreBucketName:
+    Description: Name of the S3 bucket that will hold photos
+    Value: !Ref ObjectStoreBucket

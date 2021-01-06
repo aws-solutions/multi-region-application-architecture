@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
+ * @author Solution Builders
+ */
+
+/**
  * Possible return values to the CloudFormation custom resource request.
  */
 export enum StatusTypes {
   Success = 'SUCCESS',
-  Failed = 'FAILED' 
+  Failed = 'FAILED'
 }
 
 /**
@@ -44,19 +48,22 @@ export interface ICustomResourceRequest {
  * the DynamoDB CreateGlobalTable API call.
  */
 export interface IResourceProperties {
-  SrcBucket: string
-  SrcPath: string
-  ManifestFile: string
-  DestBucket: string
-  FormattedStackName: string
-  BucketNameToken: string
-  PrimaryRegion: string
-  SecondaryRegion: string
-}
-
-export interface ICustomResourceResponseData {
-  PrimaryBucketName: string
-  PrimaryLogBucketName: string
-  SecondaryBucketName: string
-  SecondaryLogBucketName: string
+  SrcBucket: string;
+  SrcPath: string;
+  ManifestFile: string;
+  DestBucket: string;
+  ConsoleBucket: string;
+  PrimaryRoutingLayerEndpoint: string;
+  PrimaryPhotosApiEndpoint: string;
+  PrimaryObjectStoreBucket: string;
+  PrimaryRegion: string;
+  SecondaryRoutingLayerEndpoint: string;
+  SecondaryPhotosApiEndpoint: string;
+  SecondaryObjectStoreBucket: string;
+  SecondaryRegion: string;
+  IdentityPoolId: string;
+  UserPoolClientId: string;
+  UserPoolId: string;
+  UIRegion: string;
+  AppId: string;
 }

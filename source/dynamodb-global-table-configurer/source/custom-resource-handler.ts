@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
+ * @author Solution Builders
+ */
+
+/**
  * Possible return values to the CloudFormation custom resource request.
  */
 export enum StatusTypes {
   Success = 'SUCCESS',
-  Failed = 'FAILED' 
+  Failed = 'FAILED'
 }
 
 /**

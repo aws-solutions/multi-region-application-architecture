@@ -1,6 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * @author Solution Builders
+ */
+
 const awsMock = require('aws-sdk-mock');
 const axios = require('axios');
 const sinon = require('sinon');
