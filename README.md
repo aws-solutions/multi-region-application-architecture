@@ -56,6 +56,10 @@ aws s3 sync ./global-s3-assets/ s3://my-bucket-ap-northeast-1/multi-region-appli
 * Get the link of the `multi-region-application-architecture.template` uploaded to your Amazon S3 bucket in the _primary region_.
 * Deploy the Multi Region Application Architecture Solution to your account by launching a new AWS CloudFormation stack using the S3 link of the `multi-region-application-architecture.template` in the _primary region_.
 
+## Collection of operational metrics
+This solution collects anonymous operational metrics to help AWS improve the quality and features of the solution. For more information, including how to disable this capability, please see the [implementation guide](https://docs.aws.amazon.com/solutions/latest/multi-region-application-architecture/appendix-d.html).
+
+
 ## License
 
 * This project is licensed under the terms of the Apache 2.0 license. See `LICENSE`.
