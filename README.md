@@ -59,7 +59,6 @@ aws s3 sync ./global-s3-assets/ s3://my-bucket-ap-northeast-1/multi-region-appli
 ## Collection of operational metrics
 This solution collects anonymous operational metrics to help AWS improve the quality and features of the solution. For more information, including how to disable this capability, please see the [implementation guide](https://docs.aws.amazon.com/solutions/latest/multi-region-application-architecture/appendix-d.html).
 
-
 ## License
 
 * This project is licensed under the terms of the Apache 2.0 license. See `LICENSE`.

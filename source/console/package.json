@@ -19,10 +19,9 @@
     "uuid": "^8.0.0"
   },
   "scripts": {
-    "clean": "rm -rf node_modules && rm -rf package && rm -rf coverage && rm -rf build",
+    "clean": "rm -rf node_modules/ package/ coverage/ build/ package-lock.json",
     "start": "react-scripts start",
-    "build:init": "rm -rf node_modules && rm -rf build",
-    "build": "npm run build:init && npm ci && react-scripts build",
+    "build": "npm run clean && npm install && react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },

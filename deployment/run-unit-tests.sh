@@ -27,7 +27,7 @@ do
     echo "------------------------------------------------------------------------------"
     cd $source_dir/$lambda_package
     npm run clean
-    npm ci
+    npm install
     npm test
     # Check the result of the npm test and exit if a failed test is identified
     if [ $? -eq 0 ]

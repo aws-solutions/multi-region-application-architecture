@@ -48,6 +48,10 @@ do
   cp $template_dist_dir/"${TEMPLATE%.yaml}.template" $build_dist_dir/"${TEMPLATE%.yaml}.template"
 done
 
+cd $source_dir/utils
+npm run clean
+npm install
+
 declare -a lambda_packages=(
   "dynamodb-global-table-configurer"
   "presentation-configurer"
@@ -84,7 +88,6 @@ echo "--------------------------------------------------------------------------
 cd $source_dir/console
 [ -e build ] && rm -r build
 [ -e node_modules ] && rm -rf node_modules
-npm ci
 npm run build
 mkdir $build_dist_dir/console
 cp -r ./build/* $build_dist_dir/console/

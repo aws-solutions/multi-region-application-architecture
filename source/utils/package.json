@@ -5,8 +5,8 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "clean": "rm -rf node_modules && rm -rf package && rm -rf coverage && rm -rf build",
-    "package": "npm ci && npm run build && npm prune --production && rsync -avr ./node_modules ./build",
+    "clean": "rm -rf node_modules/ package/ coverage/ build/ package-lock.json",
+    "package": "npm run clean && npm install && npm run build && npm prune --production && rsync -avr ./node_modules ./build",
     "test": "jest --config jestconfig.json --coverage"
   },
   "author": "AWS Solutions",
