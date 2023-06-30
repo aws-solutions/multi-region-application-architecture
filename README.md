@@ -1,3 +1,7 @@
+# Deprecation Notice
+
+This AWS Solution has been archived and is no longer maintained by AWS. To discover other solutions, please visit the [AWS Solutions Library](https://aws.amazon.com/solutions/).
+
 # Multi Region Application Architecture
 
 Many Amazon Web Services (AWS) customers have business requirements that require expedient recovery from regional failure with little-to-no application data loss. To help demonstrate an active/passive serverless architecture with easy failover to a backup region, AWS offers Multi-Region Application Architecture. 
